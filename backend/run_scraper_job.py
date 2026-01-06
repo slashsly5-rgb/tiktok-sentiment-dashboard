@@ -46,6 +46,15 @@ async def main(keywords: list, max_videos: int):
     Returns:
         Results dictionary
     """
+    # Pre-flight: Ensure browsers are installed (Critical for Cloud)
+    logger.info("Verifying Playwright browsers...")
+    import subprocess
+    try:
+        subprocess.run([sys.executable, "-m", "playwright", "install", "chromium"], check=True)
+        logger.info("Browser installation check complete.")
+    except Exception as e:
+        logger.error(f"Failed to install browsers: {e}")
+
     logger.info(f"Starting scraping job for keywords: {keywords}")
     logger.info(f"Max videos per keyword: {max_videos}")
 
