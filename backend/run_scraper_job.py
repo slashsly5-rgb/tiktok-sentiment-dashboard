@@ -60,7 +60,17 @@ async def main(keywords: list, max_videos: int):
 
     if not os.getenv("OPENAI_API_KEY"):
          logger.error("CRITICAL: OPENAI_API_KEY not found in environment!")
-         return {"status": "failed", "error": "Missing OPENAI_API_KEY"}
+    else:
+         logger.info("OPENAI_API_KEY found.")
+
+    # Debug Environment Injection
+    logger.info(f"DEBUG: os.environ SUPABASE_URL: {os.environ.get('SUPABASE_URL', 'NOT_SET')}")
+    key_check = os.environ.get('SUPABASE_SERVICE_ROLE_KEY')
+    logger.info(f"DEBUG: os.environ SUPABASE_KEY: {'[PRESENT]' if key_check else '[MISSING]'}")
+
+    from config import Config
+    logger.info(f"DEBUG: Config.SUPABASE_URL: {Config.SUPABASE_URL}")
+    logger.info(f"DEBUG: Config.SUPABASE_KEY: {'[PRESENT]' if Config.SUPABASE_SERVICE_ROLE_KEY else '[MISSING]'}")
 
     # Initialize database client
     try:
