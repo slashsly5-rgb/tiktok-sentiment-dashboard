@@ -36,6 +36,8 @@ def get_database():
     except Exception as e:
         return None
 
+db = get_database()
+
 if not db:
     st.error("⚠️ Application could not connect to the database.")
     
