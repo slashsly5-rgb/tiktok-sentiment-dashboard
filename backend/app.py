@@ -16,6 +16,7 @@ import subprocess
 import textwrap
 import json
 import os
+from config import Config
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
