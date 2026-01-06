@@ -96,7 +96,14 @@ class Analyzer:
             return result
         except Exception as e:
             print(f"Error analyzing video: {e}")
-            return {"topic": "Error", "discussion": "Error", "sentiment": "Error", "score": "0", "key_issues": []}
+            # Return the actual error message so it shows in the UI
+            return {
+                "topic": "Analysis Error", 
+                "discussion": str(e), 
+                "sentiment": "Error", 
+                "score": "0", 
+                "key_issues": []
+            }
 
 
 def analyze_from_database(video_id: str, db_client: SupabaseClient) -> Optional[Dict[str, Any]]:
