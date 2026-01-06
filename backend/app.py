@@ -29,6 +29,19 @@ st.set_page_config(
     initial_sidebar_state="collapsed"
 )
 
+# DEBUG: Expose Key Suffix
+try:
+    k = Config.OPENAI_API_KEY
+    suffix = k[-8:] if k and len(k) > 10 else "MISSING/SHORT"
+    st.sidebar.warning(f"🔑 Loaded Key Suffix: ...{suffix}")
+    # Also put it on main page top for visibility if sidebar is hidden
+    if "Is6E" in suffix:
+        st.error(f"🚨 ACTIVE KEY IS OLD! Suffix: ...{suffix}. Please Reboot App completely.")
+    else:
+        st.success(f"✅ ACTIVE KEY IS NEW. Suffix: ...{suffix}")
+except:
+    pass
+
 # Initialize database
 @st.cache_resource
 def get_database():
@@ -354,6 +367,13 @@ with col_left:
                     if debug_img_path.exists():
                         st.error("📸 Debug Screenshot Captured (Scraper blocked or empty results):")
                         st.image(str(debug_img_path), caption="What the scraper saw", use_container_width=True)
+
+                # DEBUG: Extract OpenAI Key info from logs to show user
+                combined_output = result.stdout + "\n" + result.stderr
+                if "os.environ OPENAI_KEY" in combined_output:
+                    for line in combined_output.split('\n'):
+                        if "DEBUG: os.environ OPENAI_KEY" in line:
+                            st.warning(f"🕵️ Key Check: {line.strip()}")
 
                 if result.returncode == 0:
                     if found_videos:
