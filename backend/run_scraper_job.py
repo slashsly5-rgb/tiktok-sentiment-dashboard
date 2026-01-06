@@ -80,7 +80,7 @@ async def main(keywords: list, max_videos: int):
     for keyword in keywords:
         try:
             logger.info(f"Processing keyword: {keyword}")
-            result = await scrape_and_save(keyword, max_videos, db_client)
+            result = await scrape_and_save(keyword, max_videos, db_client, headless=True)
             results.append(result)
             logger.info(f"Completed {keyword}: {result['scraped']} scraped, {result['skipped']} skipped")
         except Exception as e:

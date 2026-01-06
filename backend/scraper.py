@@ -424,7 +424,7 @@ class TikTokScraper:
         return data
 
 
-async def scrape_and_save(keyword: str, max_videos: int, db_client: SupabaseClient, scraper: TikTokScraper = None) -> Dict[str, Any]:
+async def scrape_and_save(keyword: str, max_videos: int, db_client: SupabaseClient, scraper: TikTokScraper = None, headless: bool = True) -> Dict[str, Any]:
     """
     Scrape videos by keyword and save to database
 
@@ -439,7 +439,7 @@ async def scrape_and_save(keyword: str, max_videos: int, db_client: SupabaseClie
     """
     close_scraper = False
     if not scraper:
-        scraper = TikTokScraper(headless=False)
+        scraper = TikTokScraper(headless=headless)
         await scraper.start()
         close_scraper = True
 
