@@ -34,6 +34,7 @@ def get_database():
     try:
         return SupabaseClient()
     except Exception as e:
+        st.error(f"Detailed Connection Error: {str(e)}")
         return None
 
 db = get_database()
