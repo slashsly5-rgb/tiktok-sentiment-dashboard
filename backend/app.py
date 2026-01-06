@@ -40,16 +40,7 @@ def get_database():
 db = get_database()
 
 if not db:
-    st.error("⚠️ Application could not connect to the database.")
-    
-    # DEBUG CONFIGURATION
-    from config import Config
-    st.markdown("### 🔍 Diagnostics")
-    st.text(f"Supabase URL: {Config.SUPABASE_URL}")
-    st.text(f"Service Key Detected: {'YES' if Config.SUPABASE_SERVICE_ROLE_KEY else 'NO'}")
-    st.text(f"Anon Key Detected: {'YES' if Config.SUPABASE_ANON_KEY else 'NO'}")
-    
-    st.info("Please check your Streamlit Secrets.")
+    st.error("⚠️ Application could not connect to the database. Please check your Secrets.")
     st.stop()
 
 # ============================================
@@ -326,12 +317,19 @@ with col_left:
             
             try:
                 # Run the scraper script as a subprocess
-                # NOTE: cwd="backend" because the script depends on local imports in that dir
-                cmd = [sys.executable, "run_scraper_job.py", "--keywords", keyword, "--max", str(count)]
+                # Fix: Use absolute path relative to this file to find run_scraper_job.py in root
+                import os
+                from pathlib import Path
+                
+                # Get repo root (parent of backend/)
+                repo_root = Path(__file__).resolve().parent.parent
+                scraper_script = repo_root / "run_scraper_job.py"
+                
+                cmd = [sys.executable, str(scraper_script), "--keywords", keyword, "--max", str(count)]
                 
                 with st.spinner(f"Running analysis for '{keyword}'... This may take a minute."):
-                    # cwd="." because app.py is likely running from backend/ already
-                    result = subprocess.run(cmd, capture_output=True, text=True, cwd=".")
+                    # Run in repo root so imports work
+                    result = subprocess.run(cmd, capture_output=True, text=True, cwd=str(repo_root))
                 
                 with st.expander("View Analysis Logs", expanded=False):
                     st.code(result.stdout + "\n" + result.stderr)
