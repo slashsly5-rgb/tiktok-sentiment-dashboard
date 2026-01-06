@@ -68,6 +68,13 @@ async def main(keywords: list, max_videos: int):
     key_check = os.environ.get('SUPABASE_SERVICE_ROLE_KEY')
     logger.info(f"DEBUG: os.environ SUPABASE_KEY: {'[PRESENT]' if key_check else '[MISSING]'}")
 
+    openai_key = os.environ.get('OPENAI_API_KEY')
+    if openai_key:
+        logger.info(f"DEBUG: os.environ OPENAI_KEY Length: {len(openai_key)}")
+        logger.info(f"DEBUG: os.environ OPENAI_KEY Suffix: ...{openai_key[-5:]}")
+    else:
+        logger.info("DEBUG: os.environ OPENAI_KEY: [MISSING]")
+    
     from config import Config
     logger.info(f"DEBUG: Config.SUPABASE_URL: {Config.SUPABASE_URL}")
     logger.info(f"DEBUG: Config.SUPABASE_KEY: {'[PRESENT]' if Config.SUPABASE_SERVICE_ROLE_KEY else '[MISSING]'}")
