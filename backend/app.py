@@ -323,13 +323,14 @@ with col_left:
                 
                 # Get repo root (parent of backend/)
                 repo_root = Path(__file__).resolve().parent.parent
-                scraper_script = repo_root / "run_scraper_job.py"
+                backend_dir = repo_root / "backend"
+                scraper_script = backend_dir / "run_scraper_job.py"
                 
                 cmd = [sys.executable, str(scraper_script), "--keywords", keyword, "--max", str(count)]
                 
                 with st.spinner(f"Running analysis for '{keyword}'... This may take a minute."):
-                    # Run in repo root so imports work
-                    result = subprocess.run(cmd, capture_output=True, text=True, cwd=str(repo_root))
+                    # Run in backend dir so imports work
+                    result = subprocess.run(cmd, capture_output=True, text=True, cwd=str(backend_dir))
                 
                 with st.expander("View Analysis Logs", expanded=False):
                     st.code(result.stdout + "\n" + result.stderr)
