@@ -25,9 +25,13 @@ class SupabaseClient:
         """Connect to Supabase with retry logic"""
         for attempt in range(Config.DB_RETRY_ATTEMPTS):
             try:
+                key = Config.SUPABASE_SERVICE_ROLE_KEY
+                if key:
+                    logger.info(f"DEBUG: Using Supabase Key starting with: {key[:5]}...")
+                
                 client = create_client(
                     Config.SUPABASE_URL,
-                    Config.SUPABASE_SERVICE_ROLE_KEY
+                    key
                 )
                 logger.info("Successfully connected to Supabase")
                 return client
