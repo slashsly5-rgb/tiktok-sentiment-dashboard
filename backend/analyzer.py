@@ -11,6 +11,15 @@ logger = logging.getLogger(__name__)
 class Analyzer:
     def __init__(self, api_key=None):
         self.api_key = api_key or os.getenv("OPENAI_API_KEY")
+        
+        # DEBUG: Trace where the key came from
+        if self.api_key:
+            suffix = self.api_key[-5:] if len(self.api_key) > 5 else "SHORT"
+            source = "EXPLICIT" if api_key else "ENV_FALLBACK"
+            logger.info(f"DEBUG: Analyzer initialized with key ...{suffix} from {source}")
+        else:
+            logger.warning("DEBUG: Analyzer initialized with NO KEY")
+
         if not self.api_key:
             print("Warning: OPENAI_API_KEY not found. Analysis will be skipped.")
             self.client = None

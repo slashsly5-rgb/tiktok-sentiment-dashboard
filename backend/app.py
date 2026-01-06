@@ -92,15 +92,6 @@ css_styles = """
         display: flex; justify-content: center; align-items: center;
     }
 
-    /* SARAWAK RIBBON */
-    .sidebar-ribbon {
-        width: 36px; height: 140px; 
-        background-color: var(--gold);
-        background: linear-gradient(135deg, #FFD700 25%, #222 25%, #222 45%, #CC0000 45%, #CC0000 65%, #FFD700 65%);
-        margin-bottom: 30px; position: relative;
-        display: flex; justify-content: center; align-items: center;
-        box-shadow: 0 4px 6px rgba(0,0,0,0.3);
-    }
     .sidebar-ribbon::after {
         content: ''; position: absolute; bottom: -15px; left: 0;
         border-left: 18px solid transparent; border-right: 18px solid transparent;
@@ -111,21 +102,37 @@ css_styles = """
        A simpler approach for the "V" cut is a clip-path. */
     .sidebar-ribbon {
         width: 36px; height: 140px;
-        background: linear-gradient(160deg, #FFD700 35%, #000 35%, #000 50%, #D00 50%, #D00 65%, #FFD700 65%);
-        clip-path: polygon(0 0, 100% 0, 100% 100%, 50% 90%, 0 100%);
+        clip-path: polygon(0 0, 100% 0, 100% 100%, 50% 88%, 0 100%);
         margin-bottom: 30px;
+    }
+    
+    .sidebar-btn {
+        width: 40px; height: 40px; margin-bottom: 20px;
+        border-radius: 8px; background-color: #333;
         display: flex; justify-content: center; align-items: center;
+        cursor: pointer; transition: all 0.3s ease;
+        text-decoration: none; color: white !important;
     }
-    .ribbon-star {
-        color: #FFD700; filter: drop-shadow(0 1px 2px rgba(0,0,0,0.5));
+    .sidebar-btn:hover { background-color: var(--gold); transform: scale(1.1); }
+    .sidebar-btn svg { width: 22px; height: 22px; fill: white; }
+    .sidebar-btn:hover svg { fill: #222; }
+    
+    /* TOOLTIP */
+    .sidebar-btn:hover::after {
+        content: attr(data-title);
+        position: absolute; left: 50px; 
+        background-color: #333; color: #fff; padding: 5px 10px;
+        border-radius: 4px; white-space: nowrap; font-size: 12px;
+        z-index: 999999; pointer-events: none;
     }
+</style>
+"""
+st.markdown(css_styles, unsafe_allow_html=True)
 
-    .sidebar-icon {
-        color: #666; font-size: 24px; margin: 15px 0; cursor: pointer;
-        text-align: center; width: 100%; display: flex; justify-content: center;
-        transition: color 0.2s;
-    }
-    .sidebar-icon:hover { color: #FFF; }
+# PERSISTENT LOG VIEWER IN SIDEBAR (Debug)
+if "last_logs" in st.session_state:
+    with st.sidebar.expander("📝 Last Analysis Logs", expanded=True):
+        st.code(st.session_state["last_logs"][-2000:], language="text") # Show last 2000 chars
     .sidebar-icon.active { color: var(--gold); border-left: 3px solid var(--gold); }
     .sidebar-label {
         font-size: 9px; color: #666; margin-top: -10px; margin-bottom: 20px;
@@ -376,6 +383,8 @@ with col_left:
 
                 # DEBUG: Extract OpenAI Key info from logs to show user
                 combined_output = result.stdout + "\n" + result.stderr
+                st.session_state["last_logs"] = combined_output # PERSIST LOGS
+
                 if "os.environ OPENAI_KEY" in combined_output:
                     for line in combined_output.split('\n'):
                         if "DEBUG: os.environ OPENAI_KEY" in line:
@@ -386,9 +395,10 @@ with col_left:
                         status_box.success("✅ Analysis Complete! refreshing data...")
                         st.cache_data.clear() 
                         st.cache_resource.clear()
-                        st.rerun()
+                        # st.rerun() # DISABLE RERUN FOR DEBUGGING
+                        st.info("Analysis finished. Please check the logs below before manually refreshing if needed.")
                     else:
-                         status_box.warning("⚠️ Scraper finished but found 0 videos. See logs/screenshot above.")
+                        status_box.warning("⚠️ Scraper finished but found 0 videos. See logs/screenshot above.")
                 else:
                     status_box.error(f"❌ Error during scrape: {result.stderr}")
             except Exception as e:

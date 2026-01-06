@@ -137,6 +137,7 @@ async def main(keywords: list, max_videos: int, openai_api_key: str = None):
 
 
 if __name__ == "__main__":
+    logger.info(f"DEBUG: sys.argv: {sys.argv}")
     parser = argparse.ArgumentParser(description="Run TikTok scraping job")
     parser.add_argument(
         "--keywords",
