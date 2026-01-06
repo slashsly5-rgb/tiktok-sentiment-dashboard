@@ -328,9 +328,19 @@ with col_left:
                 
                 cmd = [sys.executable, str(scraper_script), "--keywords", keyword, "--max", str(count)]
                 
+                # Prepare environment for subprocess (Critical for Cloud)
+                # Pass explicit secrets because standalone script can't read st.secrets
+                env = os.environ.copy()
+                env["SUPABASE_URL"] = Config.SUPABASE_URL or ""
+                env["SUPABASE_SERVICE_ROLE_KEY"] = Config.SUPABASE_SERVICE_ROLE_KEY or ""
+                env["SUPABASE_ANON_KEY"] = Config.SUPABASE_ANON_KEY or ""
+                env["OPENAI_API_KEY"] = Config.OPENAI_API_KEY or ""
+                # Also ensure PYTHONPATH includes backend for imports if needed
+                env["PYTHONPATH"] = str(backend_dir)
+                
                 with st.spinner(f"Running analysis for '{keyword}'... This may take a minute."):
                     # Run in backend dir so imports work
-                    result = subprocess.run(cmd, capture_output=True, text=True, cwd=str(backend_dir))
+                    result = subprocess.run(cmd, capture_output=True, text=True, cwd=str(backend_dir), env=env)
                 
                 # Check for debug screenshot from scraper
                 debug_img_path = backend_dir / "search_debug.png"
