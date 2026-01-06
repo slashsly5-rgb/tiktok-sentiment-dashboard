@@ -38,6 +38,11 @@ def get_database():
 
 db = get_database()
 
+if not db:
+    st.warning("⚠️ Application could not connect to the database.")
+    st.info("If you are the admin, please add your `SUPABASE_URL` and `SUPABASE_KEY` to the app's Secrets.")
+    st.stop()
+
 # ============================================
 # CSS STYLING (Single Block, No Indentation Issues)
 # ============================================
