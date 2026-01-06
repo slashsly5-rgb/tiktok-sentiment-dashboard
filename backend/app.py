@@ -36,11 +36,17 @@ def get_database():
     except Exception as e:
         return None
 
-db = get_database()
-
 if not db:
-    st.warning("⚠️ Application could not connect to the database.")
-    st.info("If you are the admin, please add your `SUPABASE_URL` and `SUPABASE_KEY` to the app's Secrets.")
+    st.error("⚠️ Application could not connect to the database.")
+    
+    # DEBUG CONFIGURATION
+    from config import Config
+    st.markdown("### 🔍 Diagnostics")
+    st.text(f"Supabase URL: {Config.SUPABASE_URL}")
+    st.text(f"Service Key Detected: {'YES' if Config.SUPABASE_SERVICE_ROLE_KEY else 'NO'}")
+    st.text(f"Anon Key Detected: {'YES' if Config.SUPABASE_ANON_KEY else 'NO'}")
+    
+    st.info("Please check your Streamlit Secrets.")
     st.stop()
 
 # ============================================
