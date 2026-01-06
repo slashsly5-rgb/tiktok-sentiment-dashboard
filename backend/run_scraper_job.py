@@ -24,7 +24,6 @@ from analyzer import batch_analyze_unanalyzed
 from config import Config
 import logging
 
-# Configure logging
 # Configure logging to STDOUT for dashboard capture
 logging.basicConfig(
     level=logging.INFO,
@@ -35,13 +34,14 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-async def main(keywords: list, max_videos: int):
+async def main(keywords: list, max_videos: int, openai_api_key: str = None):
     """
     Run scraping job for given keywords
 
     Args:
         keywords: List of search keywords
         max_videos: Maximum videos per keyword
+        openai_api_key: Explicit API key to override environment
 
     Returns:
         Results dictionary
@@ -58,8 +58,8 @@ async def main(keywords: list, max_videos: int):
     logger.info(f"Starting scraping job for keywords: {keywords}")
     logger.info(f"Max videos per keyword: {max_videos}")
 
-    if not os.getenv("OPENAI_API_KEY"):
-         logger.error("CRITICAL: OPENAI_API_KEY not found in environment!")
+    if not os.getenv("OPENAI_API_KEY") and not openai_api_key:
+         logger.error("CRITICAL: OPENAI_API_KEY not found in environment or CLI args!")
     else:
          logger.info("OPENAI_API_KEY found.")
 
@@ -67,17 +67,6 @@ async def main(keywords: list, max_videos: int):
     logger.info(f"DEBUG: os.environ SUPABASE_URL: {os.environ.get('SUPABASE_URL', 'NOT_SET')}")
     key_check = os.environ.get('SUPABASE_SERVICE_ROLE_KEY')
     logger.info(f"DEBUG: os.environ SUPABASE_KEY: {'[PRESENT]' if key_check else '[MISSING]'}")
-
-    openai_key = os.environ.get('OPENAI_API_KEY')
-    if openai_key:
-        logger.info(f"DEBUG: os.environ OPENAI_KEY Length: {len(openai_key)}")
-        logger.info(f"DEBUG: os.environ OPENAI_KEY Suffix: ...{openai_key[-5:]}")
-    else:
-        logger.info("DEBUG: os.environ OPENAI_KEY: [MISSING]")
-    
-    from config import Config
-    logger.info(f"DEBUG: Config.SUPABASE_URL: {Config.SUPABASE_URL}")
-    logger.info(f"DEBUG: Config.SUPABASE_KEY: {'[PRESENT]' if Config.SUPABASE_SERVICE_ROLE_KEY else '[MISSING]'}")
 
     # Initialize database client
     try:
@@ -92,6 +81,9 @@ async def main(keywords: list, max_videos: int):
         }
 
     results = []
+    
+    total_scraped = 0
+    total_skipped = 0
 
     # Process each keyword
     for keyword in keywords:
@@ -121,45 +113,12 @@ async def main(keywords: list, max_videos: int):
     logger.info("Starting analysis of new videos...")
     try:
         # Pass the explicit_key to batch_analyze_unanalyzed
-        analysis_result = batch_analyze_unanalyzed(db_client, limit=total_scraped + 20, openai_api_key=openai_api_key) # Analyze newly scraped + backlog
+        analysis_result = batch_analyze_unanalyzed(db_client, limit=total_scraped + 20, openai_api_key=openai_api_key) 
         logger.info(f"Analysis complete: {analysis_result['analyzed']} analyzed")
         
         # Add analysis stats to summary
         for r in results:
             r['analyzed_count'] = analysis_result['analyzed']
-    except Exception as e:
-        logger.error(f"Analysis failed: {e}")
-
-    summary = {
-        "status": "completed",
-        "total_keywords": len(keywords),
-        "total_scraped": total_scraped,
-        "total_skipped": total_skipped,
-        "total_videos": len(total_video_ids),
-        "video_ids": total_video_ids,
-        "results": results
-    }
-
-    logger.info(f"Job completed: {total_scraped} videos scraped, {total_skipped} skipped")
-    return summary
-
-
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Run TikTok scraping job")
-    parser.add_argument(
-        "--keywords",
-        type=str,
-        required=True,
-        help="Comma-separated list of keywords to search"
-    )
-        # Pass the explicit_key to batch_analyze_unanalyzed
-        analysis_result = batch_analyze_unanalyzed(db_client, limit=total_scraped + 20, openai_api_key=explicit_key) # Analyze newly scraped + backlog
-        logger.info(f"Analysis complete: {analysis_result['analyzed']} analyzed")
-        
-        # Add analysis stats to summary
-        for r in results:
-            r['analyzed_count'] = analysis_result['analyzed']
-            
     except Exception as e:
         logger.error(f"Analysis failed: {e}")
 
