@@ -340,7 +340,13 @@ with col_left:
                 backend_dir = repo_root / "backend"
                 scraper_script = backend_dir / "run_scraper_job.py"
                 
-                cmd = [sys.executable, str(scraper_script), "--keywords", keyword, "--max", str(count)]
+                cmd = [
+                    sys.executable, 
+                    str(scraper_script), 
+                    "--keywords", keyword, 
+                    "--max", str(count),
+                    "--openai_key", Config.OPENAI_API_KEY or ""  # Force explicit key pass
+                ]
                 
                 # Prepare environment for subprocess (Critical for Cloud)
                 # Pass explicit secrets because standalone script can't read st.secrets

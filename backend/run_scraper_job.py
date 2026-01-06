@@ -120,7 +120,40 @@ async def main(keywords: list, max_videos: int):
     # Run Analysis on new videos
     logger.info("Starting analysis of new videos...")
     try:
-        analysis_result = batch_analyze_unanalyzed(db_client, limit=total_scraped + 20) # Analyze newly scraped + backlog
+        # Pass the explicit_key to batch_analyze_unanalyzed
+        analysis_result = batch_analyze_unanalyzed(db_client, limit=total_scraped + 20, openai_api_key=openai_api_key) # Analyze newly scraped + backlog
+        logger.info(f"Analysis complete: {analysis_result['analyzed']} analyzed")
+        
+        # Add analysis stats to summary
+        for r in results:
+            r['analyzed_count'] = analysis_result['analyzed']
+    except Exception as e:
+        logger.error(f"Analysis failed: {e}")
+
+    summary = {
+        "status": "completed",
+        "total_keywords": len(keywords),
+        "total_scraped": total_scraped,
+        "total_skipped": total_skipped,
+        "total_videos": len(total_video_ids),
+        "video_ids": total_video_ids,
+        "results": results
+    }
+
+    logger.info(f"Job completed: {total_scraped} videos scraped, {total_skipped} skipped")
+    return summary
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Run TikTok scraping job")
+    parser.add_argument(
+        "--keywords",
+        type=str,
+        required=True,
+        help="Comma-separated list of keywords to search"
+    )
+        # Pass the explicit_key to batch_analyze_unanalyzed
+        analysis_result = batch_analyze_unanalyzed(db_client, limit=total_scraped + 20, openai_api_key=explicit_key) # Analyze newly scraped + backlog
         logger.info(f"Analysis complete: {analysis_result['analyzed']} analyzed")
         
         # Add analysis stats to summary
@@ -164,17 +197,26 @@ if __name__ == "__main__":
         default=None,
         help="Output JSON file path (optional)"
     )
+    parser.add_argument("--openai_key", type=str, default=None, help="Explicit OpenAI API Key")
 
     args = parser.parse_args()
 
     # Parse keywords
     keywords = [k.strip() for k in args.keywords.split(",")]
+    explicit_key = args.openai_key
+
+    # Log which key is being used for OpenAI
+    if explicit_key:
+        logger.info(f"DEBUG: Using Explicit CLI OpenAI Key ending in ...{explicit_key[-5:]}")
+    else:
+        logger.info("DEBUG: Using Environment OpenAI API Key")
 
     # Run async main
     if sys.platform == 'win32':
         asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
 
-    results = asyncio.run(main(keywords, args.max_videos))
+    # Pass implicit key to main
+    results = asyncio.run(main(keywords, args.max_videos, explicit_key))
 
     # Print results as JSON
     print(json.dumps(results, indent=2))
@@ -185,7 +227,6 @@ if __name__ == "__main__":
             json.dump(results, f, indent=2)
         logger.info(f"Results saved to {args.output}")
 
-    # Exit with appropriate code
     # Exit with appropriate code (0 only if completed AND scraped > 0)
     is_success = results["status"] == "completed" and results.get("total_scraped", 0) > 0
     sys.exit(0 if is_success else 1)
