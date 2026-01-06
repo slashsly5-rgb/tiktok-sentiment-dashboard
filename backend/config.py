@@ -18,16 +18,16 @@ def get_secret(key, default=None):
     """Try to get secret from os.environ, then st.secrets"""
     # 1. Check OS Environment
     val = os.getenv(key)
-    if val: return val.strip()
+    if val: return val.replace("\n", "").replace("\r", "").strip()
     
     # 2. Check Streamlit Secrets (Flat)
     try:
         import streamlit as st
         if key in st.secrets:
-            return str(st.secrets[key]).strip()
+            return str(st.secrets[key]).replace("\n", "").replace("\r", "").strip()
         # 3. Check Streamlit Secrets (Nested sections - common patterns)
         if "supabase" in st.secrets and key in st.secrets["supabase"]:
-            return str(st.secrets["supabase"][key]).strip()
+            return str(st.secrets["supabase"][key]).replace("\n", "").replace("\r", "").strip()
     except:
         pass
         
