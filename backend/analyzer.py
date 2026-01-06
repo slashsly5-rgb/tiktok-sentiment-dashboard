@@ -34,13 +34,16 @@ class Analyzer:
         
         Please provide:
         1. Video Topic: What is this video mainly about? (Infer from description/hashtags)
-        2. Key Discussion Points: What are the main things people are saying or debating in the comments?
+        2. Key Discussion Points: List 3-5 distinct themes or debates found in the comments. Be specific.
         3. Overall Sentiment: (Positive, Negative, Neutral, Mixed)
         4. Sentiment Score: (1-10, where 10 is extremely positive)
         
         Format the output exactly as follows:
         Topic: [Topic]
-        Discussion: [Key points]
+        Discussion:
+        - [Point 1]
+        - [Point 2]
+        - [Point 3]
         Sentiment: [Sentiment]
         Score: [Score]
         """
@@ -49,36 +52,46 @@ class Analyzer:
             response = self.client.chat.completions.create(
                 model="gpt-3.5-turbo",
                 messages=[{"role": "user", "content": prompt}],
-                max_tokens=300
+                max_tokens=350
             )
             content = response.choices[0].message.content
             
-            # Simple parsing
-            result = {}
+            # Enhanced Parsing Logic (State Machine)
+            result = {"topic": "N/A", "discussion": [], "sentiment": "N/A", "score": "5"}
+            current_section = None
+            
             for line in content.split('\n'):
                 line = line.strip()
-                if line.startswith("Topic:"): result['topic'] = line.replace("Topic:", "").strip()
-                if line.startswith("Discussion:"): result['discussion'] = line.replace("Discussion:", "").strip()
-                if line.startswith("Sentiment:"): result['sentiment'] = line.replace("Sentiment:", "").strip()
-                if line.startswith("Score:"): 
+                if not line: continue
+                
+                if line.startswith("Topic:"):
+                    result['topic'] = line.replace("Topic:", "").strip()
+                    current_section = None
+                elif line.startswith("Discussion:"):
+                    current_section = "discussion"
+                    # Handle case where text follows immediately on same line
+                    remainder = line.replace("Discussion:", "").strip()
+                    if remainder: result['discussion'].append(remainder)
+                elif line.startswith("Sentiment:"):
+                    result['sentiment'] = line.replace("Sentiment:", "").strip()
+                    current_section = None
+                elif line.startswith("Score:"):
+                    current_section = None
                     score_str = line.replace("Score:", "").strip()
-                    # Extract just the number
                     import re
                     match = re.search(r'\d+', score_str)
-                    if match:
-                        result['score'] = match.group(0)
-                    else:
-                        result['score'] = "5" # Default to neutral if confusing
+                    result['score'] = match.group(0) if match else "5"
+                elif current_section == "discussion":
+                    # Capture bullet points
+                    clean_line = line.lstrip("-•* ").strip()
+                    if clean_line:
+                        result['discussion'].append(clean_line)
             
-            # Match key_issues to discussion if matched
-            if 'discussion' in result and result['discussion'] != "N/A":
-                 # Split by newlines or commas if multiple points exist
-                 points = [p.strip('- ').strip() for p in result['discussion'].split('\n') if p.strip()]
-                 if len(points) == 1 and ',' in points[0]:
-                     points = [p.strip() for p in points[0].split(',')]
-                 result['key_issues'] = points
-            else:
-                 result['key_issues'] = []
+            # Format output for database
+            # 'discussion' field in DB usually expects string, but 'key_issues' is list
+            # We'll save the full text in 'discussion' and list in 'key_issues'
+            result['key_issues'] = result['discussion'] # It's already a list
+            result['discussion'] = "; ".join(result['discussion']) # Flatten for simple view if needed
 
             return result
         except Exception as e:
