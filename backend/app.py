@@ -125,14 +125,7 @@ css_styles = """
         border-radius: 4px; white-space: nowrap; font-size: 12px;
         z-index: 999999; pointer-events: none;
     }
-</style>
-"""
-st.markdown(css_styles, unsafe_allow_html=True)
 
-# PERSISTENT LOG VIEWER IN SIDEBAR (Debug)
-if "last_logs" in st.session_state:
-    with st.sidebar.expander("📝 Last Analysis Logs", expanded=True):
-        st.code(st.session_state["last_logs"][-2000:], language="text") # Show last 2000 chars
     .sidebar-icon.active { color: var(--gold); border-left: 3px solid var(--gold); }
     .sidebar-label {
         font-size: 9px; color: #666; margin-top: -10px; margin-bottom: 20px;
@@ -225,6 +218,11 @@ if "last_logs" in st.session_state:
 </style>
 """
 st.markdown(css_styles, unsafe_allow_html=True)
+
+# PERSISTENT LOG VIEWER IN SIDEBAR (Debug)
+if "last_logs" in st.session_state:
+    with st.sidebar.expander("📝 Last Analysis Logs", expanded=True):
+        st.code(st.session_state["last_logs"][-2000:], language="text") # Show last 2000 chars
 
 # ============================================
 # SIDEBAR (HTML)
