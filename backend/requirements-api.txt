@@ -1,0 +1,14 @@
+# Flask API dependencies
+flask
+flask-cors
+
+# Database
+supabase
+psycopg2-binary
+httpx
+websockets
+
+# Core dependencies
+python-dotenv
+playwright
+openai

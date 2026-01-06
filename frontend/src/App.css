@@ -1,0 +1,24 @@
+.app {
+  display: flex;
+  min-height: 100vh;
+  background-color: var(--bg-cream);
+}
+
+/* Loading and Error States */
+.error-message {
+  background-color: rgba(231, 76, 60, 0.1);
+  color: var(--sentiment-negative);
+  padding: var(--spacing-lg);
+  border-radius: var(--radius-lg);
+  border-left: 4px solid var(--sentiment-negative);
+  margin: var(--spacing-lg);
+}
+
+.loading-spinner {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  min-height: 400px;
+  font-size: 18px;
+  color: var(--text-secondary);
+}

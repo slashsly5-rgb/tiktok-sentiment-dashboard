@@ -1,0 +1,163 @@
+"""
+Standalone script to run TikTok scraping job
+Called by the API or can be run manually for testing
+
+Usage:
+    python run_scraper_job.py --keywords "keyword1,keyword2" --max-videos 5
+"""
+
+import asyncio
+import argparse
+import json
+import sys
+import os
+from pathlib import Path
+from dotenv import load_dotenv
+
+# Explicitly load .env from project root
+env_path = Path(__file__).parent.parent / '.env'
+load_dotenv(dotenv_path=env_path)
+
+from scraper import scrape_and_save
+from database import SupabaseClient
+from analyzer import batch_analyze_unanalyzed
+from config import Config
+import logging
+
+# Configure logging
+# Configure logging to STDOUT for dashboard capture
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(message)s', 
+    handlers=[logging.StreamHandler(sys.stdout)],
+    force=True
+)
+logger = logging.getLogger(__name__)
+
+
+async def main(keywords: list, max_videos: int):
+    """
+    Run scraping job for given keywords
+
+    Args:
+        keywords: List of search keywords
+        max_videos: Maximum videos per keyword
+
+    Returns:
+        Results dictionary
+    """
+    logger.info(f"Starting scraping job for keywords: {keywords}")
+    logger.info(f"Max videos per keyword: {max_videos}")
+
+    if not os.getenv("OPENAI_API_KEY"):
+         logger.error("CRITICAL: OPENAI_API_KEY not found in environment!")
+         return {"status": "failed", "error": "Missing OPENAI_API_KEY"}
+
+    # Initialize database client
+    try:
+        db_client = SupabaseClient()
+        logger.info("Database connection established")
+    except Exception as e:
+        logger.error(f"Failed to connect to database: {e}")
+        return {
+            "status": "failed",
+            "error": str(e),
+            "results": []
+        }
+
+    results = []
+
+    # Process each keyword
+    for keyword in keywords:
+        try:
+            logger.info(f"Processing keyword: {keyword}")
+            result = await scrape_and_save(keyword, max_videos, db_client)
+            results.append(result)
+            logger.info(f"Completed {keyword}: {result['scraped']} scraped, {result['skipped']} skipped")
+        except Exception as e:
+            logger.error(f"Error processing keyword '{keyword}': {e}")
+            results.append({
+                "keyword": keyword,
+                "error": str(e),
+                "scraped": 0,
+                "skipped": 0,
+                "video_ids": []
+            })
+
+    # Calculate totals
+    total_scraped = sum(r.get("scraped", 0) for r in results)
+    total_skipped = sum(r.get("skipped", 0) for r in results)
+    total_video_ids = []
+    for r in results:
+        total_video_ids.extend(r.get("video_ids", []))
+
+    # Run Analysis on new videos
+    logger.info("Starting analysis of new videos...")
+    try:
+        analysis_result = batch_analyze_unanalyzed(db_client, limit=total_scraped + 20) # Analyze newly scraped + backlog
+        logger.info(f"Analysis complete: {analysis_result['analyzed']} analyzed")
+        
+        # Add analysis stats to summary
+        for r in results:
+            r['analyzed_count'] = analysis_result['analyzed']
+            
+    except Exception as e:
+        logger.error(f"Analysis failed: {e}")
+
+    summary = {
+        "status": "completed",
+        "total_keywords": len(keywords),
+        "total_scraped": total_scraped,
+        "total_skipped": total_skipped,
+        "total_videos": len(total_video_ids),
+        "video_ids": total_video_ids,
+        "results": results
+    }
+
+    logger.info(f"Job completed: {total_scraped} videos scraped, {total_skipped} skipped")
+    return summary
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Run TikTok scraping job")
+    parser.add_argument(
+        "--keywords",
+        type=str,
+        required=True,
+        help="Comma-separated list of keywords to search"
+    )
+    parser.add_argument(
+        "--max-videos",
+        type=int,
+        default=Config.SCRAPER_MAX_VIDEOS,
+        help=f"Maximum videos per keyword (default: {Config.SCRAPER_MAX_VIDEOS})"
+    )
+    parser.add_argument(
+        "--output",
+        type=str,
+        default=None,
+        help="Output JSON file path (optional)"
+    )
+
+    args = parser.parse_args()
+
+    # Parse keywords
+    keywords = [k.strip() for k in args.keywords.split(",")]
+
+    # Run async main
+    if sys.platform == 'win32':
+        asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
+
+    results = asyncio.run(main(keywords, args.max_videos))
+
+    # Print results as JSON
+    print(json.dumps(results, indent=2))
+
+    # Optionally save to file
+    if args.output:
+        with open(args.output, 'w') as f:
+            json.dump(results, f, indent=2)
+        logger.info(f"Results saved to {args.output}")
+
+    # Exit with appropriate code
+    sys.exit(0 if results["status"] == "completed" else 1)

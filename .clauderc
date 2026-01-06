@@ -1,0 +1,225 @@
+# Claude Code System Prompt for TikTok Scraper Project
+
+## Core Principle: Documentation Consistency
+**CRITICAL**: Always use the SAME documentation files across all sessions. Never create duplicate or new documentation files without explicit user request.
+
+## Project Documentation Structure
+
+### 1. API Documentation
+- **File**: `docs/API.md`
+- **Purpose**: All API endpoints, request/response formats, authentication
+- **When to modify**: Adding/changing API endpoints, updating request/response schemas
+- **Never create**: `api-docs.md`, `endpoints.md`, `API_REFERENCE.md`, or similar variants
+
+### 2. Architecture Documentation
+- **File**: `docs/architecture-mvp.md` (current/active architecture)
+- **File**: `docs/architecture.md` (original/comprehensive architecture)
+- **Purpose**: System design, component interactions, data flow, technology stack
+- **When to modify**: Architecture changes, new components, system redesign
+- **Never create**: `system-design.md`, `technical-architecture.md`, or similar variants
+
+### 3. Implementation Plans
+- **File**: `IMPLEMENTATION_PLAN.md` (root level)
+- **Purpose**: Current implementation roadmap, tasks, and progress tracking
+- **When to modify**: Planning new features, tracking implementation status
+- **Never create**: `PLAN.md`, `TODO.md`, `ROADMAP.md`, or similar variants
+
+### 4. UI/Frontend Documentation
+- **File**: `docs/UI_IMPLEMENTATION_PLAN.md`
+- **Purpose**: Frontend component plans, UI specifications, React implementation details
+- **When to modify**: Adding UI features, component changes, frontend architecture
+- **Never create**: `frontend-plan.md`, `UI-DOCS.md`, or similar variants
+
+### 5. Setup & Deployment
+- **File**: `docs/LOCAL_SETUP.md`
+- **Purpose**: Local development setup, installation instructions, environment configuration
+- **When to modify**: New dependencies, setup steps, configuration changes
+- **Never create**: `SETUP.md`, `INSTALLATION.md`, `GETTING_STARTED.md`, or similar variants
+
+### 6. Component-Specific READMEs
+- **Backend**: `backend/README.md` - Backend-specific setup and usage
+- **Frontend**: `frontend/README.md` - Frontend-specific setup and usage
+- **Purpose**: Component-level documentation, module-specific instructions
+- **When to modify**: Changes to that specific component only
+
+### 7. Database Documentation
+- **File**: `docs/DATABASE.md` (create if needed for comprehensive database docs)
+- **Schema**: `setup.sql` or `backend/setup.sql` (actual schema definitions)
+- **Purpose**: Database schema, migrations, data models
+- **When to modify**: Schema changes, new tables, data model updates
+
+## Workflow Rules
+
+### Before Creating ANY Documentation File:
+1. **SEARCH FIRST**: Check if documentation for this topic already exists
+   ```
+   Glob: **/*.md
+   Grep: Search for relevant keywords across existing docs
+   ```
+
+2. **USE EXISTING FILES**: Always prefer editing existing documentation over creating new files
+
+3. **ASK IF UNCERTAIN**: If unclear which file to use, ask the user rather than creating a new file
+
+### When Modifying Documentation:
+
+1. **Read First**: Always read the entire existing file before making changes
+2. **Maintain Structure**: Preserve the existing format, heading hierarchy, and organization
+3. **Update, Don't Replace**: Add to or modify existing sections rather than rewriting from scratch
+4. **Consistent Style**: Match the writing style, formatting, and detail level of existing content
+5. **Version Control**: Keep old information unless explicitly superseded (comment it out if needed)
+
+### File Naming Conventions:
+
+- Use UPPERCASE for root-level important docs: `IMPLEMENTATION_PLAN.md`, `README.md`
+- Use lowercase with hyphens for docs/ folder: `architecture-mvp.md`, `local-setup.md`
+- Component READMEs are always `README.md` within their directory
+
+### Documentation Priority Order:
+
+When information could fit in multiple places, use this priority:
+1. **Specific** over general (component README over root README)
+2. **Active** over archived (architecture-mvp.md over architecture.md)
+3. **Dedicated** over combined (API.md for all API docs, not scattered)
+
+## API Documentation Standards
+
+### Structure for docs/API.md:
+```markdown
+# TikTok Scraper API Documentation
+
+## Overview
+[API description, base URL, versioning]
+
+## Authentication
+[Auth methods, tokens, security]
+
+## Endpoints
+
+### Endpoint Name
+- **URL**: `/api/path`
+- **Method**: `GET` | `POST` | `PUT` | `DELETE`
+- **Auth Required**: Yes/No
+- **Request Parameters**:
+  ```json
+  {
+    "param1": "type - description",
+    "param2": "type - description"
+  }
+  ```
+- **Response**:
+  ```json
+  {
+    "field1": "type - description",
+    "field2": "type - description"
+  }
+  ```
+- **Error Responses**:
+  - `400`: Description
+  - `404`: Description
+  - `500`: Description
+
+[Repeat for each endpoint]
+
+## Data Models
+[Shared data structures used across endpoints]
+
+## Error Handling
+[Common error patterns, error codes]
+
+## Rate Limiting
+[If applicable]
+```
+
+## Code Documentation Standards
+
+### Python (Backend)
+- **Module docstrings**: At top of each .py file
+- **Function docstrings**: For all public functions, include parameters, return values, and exceptions
+- **Inline comments**: Only for complex logic that isn't self-evident
+- **Type hints**: Use for function signatures
+
+### JavaScript/React (Frontend)
+- **Component comments**: JSDoc for components with props description
+- **Function comments**: For utility functions and complex logic
+- **Inline comments**: Sparingly, only for non-obvious code
+- **PropTypes or TypeScript**: Define component prop types
+
+## Session Consistency Checklist
+
+Before ANY documentation work, verify:
+- [ ] I have searched for existing documentation on this topic
+- [ ] I have identified the correct file according to this system prompt
+- [ ] I have read the existing content of that file
+- [ ] I understand the existing structure and style
+- [ ] I will update, not duplicate or replace
+
+## Special Cases
+
+### When to Create NEW Documentation:
+1. User explicitly requests a new document
+2. Topic genuinely doesn't fit any existing documentation structure
+3. Creating a new specialized guide (e.g., `CONTRIBUTING.md`, `SECURITY.md`)
+
+**Even then**: Consult this system prompt first and ask user for confirmation
+
+### When Documentation Conflicts:
+If `docs/architecture.md` and `docs/architecture-mvp.md` have conflicting information:
+- `architecture-mvp.md` is the current source of truth
+- `architecture.md` is historical/comprehensive reference
+- **Always update the MVP version for current work**
+
+### Deprecated Documentation:
+- Don't delete old docs without user approval
+- Mark as deprecated in filename: `architecture.old.md` or add "DEPRECATED" header
+- Reference the new location in the deprecated file
+
+## Git Commit Messages for Documentation
+
+When committing documentation changes:
+```
+docs: update API documentation with new /users endpoint
+
+- Add GET /api/users endpoint specification
+- Update authentication section with JWT details
+- Fix typos in error response examples
+```
+
+Use prefixes:
+- `docs:` for documentation updates
+- `docs(api):` for API documentation specifically
+- `docs(setup):` for setup documentation
+- `docs(architecture):` for architecture changes
+
+## Quick Reference Map
+
+| Topic | File | Location |
+|-------|------|----------|
+| API endpoints | API.md | docs/ |
+| System architecture | architecture-mvp.md | docs/ |
+| Implementation tasks | IMPLEMENTATION_PLAN.md | root |
+| UI/Frontend plans | UI_IMPLEMENTATION_PLAN.md | docs/ |
+| Local setup | LOCAL_SETUP.md | docs/ |
+| Backend specifics | README.md | backend/ |
+| Frontend specifics | README.md | frontend/ |
+| Database schema | setup.sql | backend/ or root |
+| Database docs | DATABASE.md | docs/ |
+
+## Enforcement
+
+**Claude Code must**:
+1. Reference this file at the start of each session involving documentation
+2. Follow the structure defined here without deviation
+3. Ask for clarification rather than creating new documentation files
+4. Always search existing docs before suggesting new ones
+5. Maintain consistency in naming, structure, and organization
+
+**User can override**: If user explicitly requests different structure, follow their instructions but document the deviation.
+
+---
+
+**Version**: 1.0
+**Last Updated**: 2025-12-27
+**Maintained by**: Project team
+
+This system prompt ensures that documentation remains organized, consistent, and maintainable across all development sessions.
