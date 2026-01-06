@@ -15,11 +15,38 @@ class Config:
     """Application configuration"""
 
     # ============================================
+    # Helper for Streamlit Secrets / Env Vars
+    # ============================================
+    @staticmethod
+    def get_secret(key, default=None):
+        """Try to get secret from os.environ, then st.secrets"""
+        # 1. Check OS Environment
+        val = os.getenv(key)
+        if val: return val
+        
+        # 2. Check Streamlit Secrets (Flat)
+        try:
+            import streamlit as st
+            if key in st.secrets:
+                return st.secrets[key]
+            # 3. Check Streamlit Secrets (Nested sections - common patterns)
+            if "supabase" in st.secrets and key in st.secrets["supabase"]:
+                return st.secrets["supabase"][key]
+        except:
+            pass
+            
+        return default
+
+    # ============================================
     # Supabase Configuration
     # ============================================
-    SUPABASE_URL = os.getenv("SUPABASE_URL")
-    SUPABASE_ANON_KEY = os.getenv("SUPABASE_ANON_KEY")
-    SUPABASE_SERVICE_ROLE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
+    SUPABASE_URL = get_secret.__func__("SUPABASE_URL")
+    
+    # Try specific keys, then fallback to generic SUPABASE_KEY
+    _generic_key = get_secret.__func__("SUPABASE_KEY")
+    
+    SUPABASE_ANON_KEY = get_secret.__func__("SUPABASE_ANON_KEY", _generic_key)
+    SUPABASE_SERVICE_ROLE_KEY = get_secret.__func__("SUPABASE_SERVICE_ROLE_KEY", _generic_key)
 
     # ============================================
     # OpenAI Configuration
@@ -118,10 +145,11 @@ class Config:
 
         if not cls.SUPABASE_URL:
             errors.append("SUPABASE_URL is not set")
-        if not cls.SUPABASE_ANON_KEY:
-            errors.append("SUPABASE_ANON_KEY is not set")
+        
+        # We only really need the Service Key to run. 
+        # Anon Key is optional for backend, forced validation removed.
         if not cls.SUPABASE_SERVICE_ROLE_KEY:
-            errors.append("SUPABASE_SERVICE_ROLE_KEY is not set")
+            errors.append("SUPABASE_SERVICE_ROLE_KEY (or SUPABASE_KEY) is not set")
 
         if errors:
             raise ValueError(f"Configuration errors: {', '.join(errors)}")
