@@ -332,14 +332,26 @@ with col_left:
                     # Run in backend dir so imports work
                     result = subprocess.run(cmd, capture_output=True, text=True, cwd=str(backend_dir))
                 
-                with st.expander("View Analysis Logs", expanded=False):
+                # Check for debug screenshot from scraper
+                debug_img_path = backend_dir / "search_debug.png"
+                found_videos = "0 scraped" not in result.stdout and "found: 0" not in result.stdout.lower()
+                
+                # Auto-expand logs if issue detected
+                with st.expander("View Analysis Logs", expanded=not found_videos or result.returncode != 0):
                     st.code(result.stdout + "\n" + result.stderr)
+                    
+                    if debug_img_path.exists():
+                        st.error("📸 Debug Screenshot Captured (Scraper blocked or empty results):")
+                        st.image(str(debug_img_path), caption="What the scraper saw", use_container_width=True)
 
                 if result.returncode == 0:
-                    status_box.success("✅ Analysis Complete! refreshing data...")
-                    st.cache_data.clear() 
-                    st.cache_resource.clear()
-                    st.rerun()
+                    if found_videos:
+                        status_box.success("✅ Analysis Complete! refreshing data...")
+                        st.cache_data.clear() 
+                        st.cache_resource.clear()
+                        st.rerun()
+                    else:
+                         status_box.warning("⚠️ Scraper finished but found 0 videos. See logs/screenshot above.")
                 else:
                     status_box.error(f"❌ Error during scrape: {result.stderr}")
             except Exception as e:

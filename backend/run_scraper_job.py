@@ -169,4 +169,6 @@ if __name__ == "__main__":
         logger.info(f"Results saved to {args.output}")
 
     # Exit with appropriate code
-    sys.exit(0 if results["status"] == "completed" else 1)
+    # Exit with appropriate code (0 only if completed AND scraped > 0)
+    is_success = results["status"] == "completed" and results.get("total_scraped", 0) > 0
+    sys.exit(0 if is_success else 1)
