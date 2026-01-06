@@ -11,6 +11,7 @@ logger = logging.getLogger(__name__)
 class Analyzer:
     def __init__(self, api_key=None):
         self.api_key = api_key or os.getenv("OPENAI_API_KEY")
+        self.org_id = "org-Ac4M8r2L9ygbPiJVGyZ2fKaF" # Forces "Aidju Digital" org
         
         # DEBUG: Trace where the key came from
         if self.api_key:
@@ -24,7 +25,8 @@ class Analyzer:
             print("Warning: OPENAI_API_KEY not found. Analysis will be skipped.")
             self.client = None
         else:
-            self.client = OpenAI(api_key=self.api_key)
+            # Explicitly pass organization ID to ensure credits are used
+            self.client = OpenAI(api_key=self.api_key, organization=self.org_id)
 
     def analyze_video(self, comments, description, hashtags):
         if not self.client:
