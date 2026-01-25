@@ -43,6 +43,36 @@ class SupabaseClient:
                     raise Exception(f"Failed to connect to Supabase after {Config.DB_RETRY_ATTEMPTS} attempts")
 
     # ============================================
+    # Maintenance Operations
+    # ============================================
+    def clear_all_data(self) -> bool:
+        """
+        Delete ALL data from the database (Videos, Comments, Sentiment)
+        Used for full reset.
+        """
+        try:
+            # Delete from 'videos' table. Cascade should handle related tables if configured,
+            # but explicit deletion is safer if cascade isn't set up.
+            # Supabase delete requires a 'where' clause. Using neq "id" to "0000" covers all UUIDs.
+            
+            logger.warning("EXECUTION DESTRUCTIVE ACTION: Clearing all database tables...")
+            
+            # 1. Clear Sentiment Analysis (if no cascade)
+            self.supabase.table("sentiment_analysis").delete().neq("id", "00000000-0000-0000-0000-000000000000").execute()
+            
+            # 2. Clear Comments (if no cascade)
+            self.supabase.table("comments").delete().neq("id", "00000000-0000-0000-0000-000000000000").execute()
+            
+            # 3. Clear Videos
+            self.supabase.table("videos").delete().neq("id", "00000000-0000-0000-0000-000000000000").execute()
+            
+            logger.info("Database successfully cleared.")
+            return True
+        except Exception as e:
+            logger.error(f"Failed to clear database: {e}")
+            return False
+
+    # ============================================
     # Video Operations
     # ============================================
 
@@ -142,7 +172,7 @@ class SupabaseClient:
 
             # Filter by keyword if provided
             if keyword:
-                query = query.ilike("search_keyword", f"%{keyword}%")
+                query = query.eq("search_keyword", keyword)
 
             # Calculate cutoff date
             cutoff_date = (datetime.now() - timedelta(days=days)).isoformat()
@@ -154,6 +184,11 @@ class SupabaseClient:
                             .execute()
 
             videos = response.data
+            
+            # FAILSAFE: Enforce strict python-side filtering
+            # (Just in case DB query ignores filter for some reason)
+            if keyword and videos:
+                videos = [v for v in videos if v.get("search_keyword") == keyword]
 
             # Flatten sentiment data if included
             if include_sentiment and videos:
@@ -172,6 +207,8 @@ class SupabaseClient:
                             video['summary'] = sentiment_data.get('discussion_points')  # Use discussion_points
                             video['topic'] = sentiment_data.get('topic')
                             video['key_issues'] = sentiment_data.get('key_issues', [])
+                            video['trend_context'] = sentiment_data.get('trend_context', "N/A")
+                            video['viral_potential'] = sentiment_data.get('viral_potential', "Low")
                         # Remove the nested object
                         del video['sentiment_analysis']
 
@@ -877,12 +914,13 @@ class SupabaseClient:
             logger.error(f"Error inserting sentiment analysis: {e}")
             return False
 
-    def get_sentiment_overview(self, days: int = 7) -> Dict[str, Any]:
+    def get_sentiment_overview(self, days: int = 7, keyword: str = None) -> Dict[str, Any]:
         """
         Get aggregated sentiment statistics
 
         Args:
             days: Number of days to look back
+            keyword: Optional search keyword to filter by
 
         Returns:
             Dictionary with sentiment overview
@@ -894,10 +932,14 @@ class SupabaseClient:
             cutoff_date = (datetime.now() - timedelta(days=days)).isoformat()
 
             # Get recent videos with sentiment
-            videos_response = self.supabase.table("videos") \
+            query = self.supabase.table("videos") \
                 .select("id, search_keyword, views_count") \
-                .gte("scraped_at", cutoff_date) \
-                .execute()
+                .gte("scraped_at", cutoff_date)
+            
+            if keyword:
+                query = query.eq("search_keyword", keyword)
+                
+            videos_response = query.execute()
 
             total_videos = len(videos_response.data)
             video_ids = [v["id"] for v in videos_response.data]
@@ -964,12 +1006,13 @@ class SupabaseClient:
     # Analytics & Statistics Operations
     # ============================================
 
-    def get_dashboard_analytics(self, days: int = 7) -> Dict[str, Any]:
+    def get_dashboard_analytics(self, days: int = 7, keyword: str = None) -> Dict[str, Any]:
         """
         Comprehensive dashboard data in one call
 
         Args:
             days: Number of days to look back
+            keyword: Optional search keyword to filter by
 
         Returns:
             Dictionary with video stats, sentiment stats, top authors, top hashtags, top keywords
@@ -980,7 +1023,11 @@ class SupabaseClient:
             cutoff_date = (datetime.now() - timedelta(days=days)).isoformat()
 
             # Get videos
-            videos_response = self.supabase.table("videos").select("*").gte("scraped_at", cutoff_date).execute()
+            query = self.supabase.table("videos").select("*").gte("scraped_at", cutoff_date)
+            if keyword:
+                query = query.eq("search_keyword", keyword)
+                
+            videos_response = query.execute()
             videos = videos_response.data
 
             video_stats = {
@@ -1098,13 +1145,14 @@ class SupabaseClient:
             logger.error(f"Error getting top authors: {e}")
             return []
 
-    def get_top_hashtags(self, days: int = 30, limit: int = 20) -> List[Dict[str, Any]]:
+    def get_top_hashtags(self, days: int = 30, limit: int = 20, keyword: str = None) -> List[Dict[str, Any]]:
         """
         Most used hashtags (JSONB aggregation)
 
         Args:
             days: Number of days to look back
             limit: Maximum hashtags to return
+            keyword: Optional search keyword to filter by
 
         Returns:
             List of top hashtags with stats
@@ -1115,7 +1163,12 @@ class SupabaseClient:
 
             cutoff_date = (datetime.now() - timedelta(days=days)).isoformat()
 
-            videos_response = self.supabase.table("videos").select("hashtags, views_count").gte("scraped_at", cutoff_date).execute()
+            query = self.supabase.table("videos").select("hashtags, views_count").gte("scraped_at", cutoff_date)
+            
+            if keyword:
+                query = query.eq("search_keyword", keyword)
+                
+            videos_response = query.execute()
             videos = videos_response.data
 
             if not videos:
@@ -1365,13 +1418,14 @@ class SupabaseClient:
             logger.error(f"Error getting engagement stats: {e}")
             return {}
 
-    def get_top_issues(self, days: int = 30, limit: int = 20) -> List[Dict[str, Any]]:
+    def get_top_issues(self, days: int = 30, limit: int = 20, keyword: str = None) -> List[Dict[str, Any]]:
         """
         Top issues from sentiment key_issues (JSONB aggregation)
 
         Args:
             days: Number of days to look back
             limit: Maximum issues to return
+            keyword: Optional search keyword to filter by
 
         Returns:
             List of top issues with stats
@@ -1383,7 +1437,11 @@ class SupabaseClient:
             cutoff_date = (datetime.now() - timedelta(days=days)).isoformat()
 
             # Get videos in date range
-            videos_response = self.supabase.table("videos").select("id").gte("scraped_at", cutoff_date).execute()
+            query = self.supabase.table("videos").select("id").gte("scraped_at", cutoff_date)
+            if keyword:
+                query = query.eq("search_keyword", keyword)
+            
+            videos_response = query.execute()
             video_ids = [v['id'] for v in videos_response.data]
 
             if not video_ids:
@@ -1443,6 +1501,30 @@ class SupabaseClient:
 
         except Exception as e:
             logger.error(f"Error getting top issues: {e}")
+            return []
+
+    # ============================================
+    # Report & Navigation Operations
+    # ============================================
+
+    def get_unique_keywords(self) -> List[str]:
+        """
+        Get list of all unique search keywords (Reports)
+        
+        Returns:
+            List of keyword strings
+        """
+        try:
+            # Supabase doesn't support 'distinct' easily in python client directly on select
+            # But we can select search_keyword and process in python for small datasets
+            # OR use a stored procedure if available.
+            # For Project S size, fetching all keywords and converting to set is fine.
+            
+            response = self.supabase.table("videos").select("search_keyword").execute()
+            keywords = set(v.get("search_keyword") for v in response.data if v.get("search_keyword"))
+            return sorted(list(keywords))
+        except Exception as e:
+            logger.error(f"Error getting unique keywords: {e}")
             return []
 
     # ============================================

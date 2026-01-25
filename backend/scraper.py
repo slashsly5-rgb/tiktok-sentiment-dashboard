@@ -45,17 +45,25 @@ class TikTokScraper:
 
     async def start(self):
         self.playwright = await async_playwright().start()
+        logger.info(f"Launching browser (Headless={self.headless})...")
+        
+        args = [
+            '--disable-blink-features=AutomationControlled',
+            '--no-sandbox',
+            '--disable-dev-shm-usage',
+            '--disable-infobars',
+            '--ignore-certificate-errors',
+            '--ignore-ssl-errors',
+            '--disable-extensions'
+        ]
+        
+        if not self.headless:
+            args.append('--start-maximized')
+            
         self.browser = await self.playwright.chromium.launch(
             headless=self.headless,
-            args=[
-                '--disable-blink-features=AutomationControlled',
-                '--no-sandbox',
-                '--disable-dev-shm-usage',
-                '--disable-infobars',
-                '--ignore-certificate-errors',
-                '--ignore-ssl-errors',
-                '--disable-extensions'
-            ]
+            channel="chrome", # Force actual Chrome installation
+            args=args
         )
         # Load auth state (preferred) or cookies
         root_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))

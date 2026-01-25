@@ -28,16 +28,22 @@ class Analyzer:
             # Explicitly pass organization ID to ensure credits are used
             self.client = OpenAI(api_key=self.api_key, organization=self.org_id)
 
-    def analyze_video(self, comments, description, hashtags):
+    def analyze_video(self, comments, description, hashtags, stats: Dict[str, Any] = None):
         if not self.client:
             return {"summary": "N/A", "sentiment": "N/A", "topic": "N/A", "discussion_points": "N/A"}
 
         comments_text = "\n".join(comments) if comments else "No comments available."
         hashtags_text = ", ".join(hashtags) if hashtags else "No hashtags."
         
+        # Format stats for context
+        stats_text = "N/A"
+        if stats:
+            stats_text = f"Views: {stats.get('views_count', 0)}, Likes: {stats.get('likes_count', 0)}, Shares: {stats.get('shares_count', 0)}"
+
         prompt = f"""
         Analyze this TikTok video based on the following data:
         
+        Stats: {stats_text}
         Description: {description}
         Hashtags: {hashtags_text}
         User Comments:
@@ -46,10 +52,19 @@ class Analyzer:
         Return a JSON object with exactly these fields:
         {{
             "topic": "Short summary of the video topic",
+            "key_issues": ["Specific Issue 1", "Specific Issue 2"],
+            "trend_context": "Explanation of why this is trending. Use stats to justify 'High' viral potential.",
+            "viral_potential": "High, Medium, or Low",
             "discussion_points": ["Point 1", "Point 2", "Point 3"],
             "sentiment": "Positive, Negative, Neutral, or Mixed",
             "score": 1-10 (integer)
         }}
+
+        CRITICAL SENTIMENT RULES:
+        1. If the video covers deaths, shootings, arrests, violence, or severe conflict, Sentiment MUST be "Negative" (Score 1-3).
+        2. If the video is about political controversy, protest, or public outrage, Sentiment MUST be "Negative" or "Mixed" (Score 2-5).
+        3. Do NOT label news about tragic events as "Positive" even if the reporting is neutral.
+        4. "Positive" is reserved for uplifting, happy, or successful content.
         """
 
         try:
@@ -61,17 +76,36 @@ class Analyzer:
                     {"role": "user", "content": prompt}
                 ],
                 response_format={"type": "json_object"},
-                max_tokens=350
+                max_tokens=450
             )
             content = response.choices[0].message.content
             data = json.loads(content)
             
+            # Helper to safely get list or string
+            issues = data.get("key_issues", [])
+            if isinstance(issues, str): issues = [issues]
+            
+            # FORCE ALIGNMENT: Ensure Score matches Label to prevent Dashboard mismatches
+            sent_label = data.get("sentiment", "Neutral")
+            score = data.get("score", 5)
+            
+            try:
+                score = int(score)
+            except:
+                score = 5
+
+            if sent_label == "Positive" and score < 7: score = 8
+            elif sent_label == "Negative" and score > 4: score = 2
+            elif sent_label == "Neutral" and (score < 4 or score > 6): score = 5
+            
             return {
                 "topic": data.get("topic", "N/A"),
                 "discussion": "; ".join(data.get("discussion_points", [])), # String for DB 'discussion' text
-                "key_issues": data.get("discussion_points", []), # List for UI
-                "sentiment": data.get("sentiment", "Neutral"),
-                "score": str(data.get("score", 5))
+                "key_issues": issues, # List for UI
+                "trend_context": data.get("trend_context", "No trend context available."),
+                "viral_potential": data.get("viral_potential", "Low"),
+                "sentiment": sent_label,
+                "score": str(score)
             }
 
         except Exception as e:
@@ -108,10 +142,17 @@ def analyze_from_database(video_id: str, db_client: SupabaseClient, openai_api_k
         comments = [c["comment_text"] for c in video.get("comments", [])]
         description = video.get("description", "")
         hashtags = video.get("hashtags", [])
+        
+        # Extract stats
+        stats = {
+            "views_count": video.get("views_count", 0),
+            "likes_count": video.get("likes_count", 0),
+            "shares_count": video.get("shares_count", 0)
+        }
 
         # Run analysis
         analyzer = Analyzer(api_key=openai_api_key)
-        analysis = analyzer.analyze_video(comments, description, hashtags)
+        analysis = analyzer.analyze_video(comments, description, hashtags, stats=stats)
 
         # Save sentiment to database
         success = db_client.insert_sentiment(video_id, analysis)

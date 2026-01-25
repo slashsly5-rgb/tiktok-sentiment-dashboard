@@ -45,3 +45,7 @@ monitor.log
 
 # Scraper/Browser
 headless_shell.tar.gz
+
+# Auth Files
+auth.json
+cookies.json

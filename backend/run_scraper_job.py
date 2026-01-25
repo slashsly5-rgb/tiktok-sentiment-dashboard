@@ -34,7 +34,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-async def main(keywords: list, max_videos: int, openai_api_key: str = None):
+async def main(keywords: list, max_videos: int, openai_api_key: str = None, headless: bool = True):
     """
     Run scraping job for given keywords
 
@@ -42,6 +42,7 @@ async def main(keywords: list, max_videos: int, openai_api_key: str = None):
         keywords: List of search keywords
         max_videos: Maximum videos per keyword
         openai_api_key: Explicit API key to override environment
+        headless: Whether to run browser in headless mode
 
     Returns:
         Results dictionary
@@ -57,6 +58,8 @@ async def main(keywords: list, max_videos: int, openai_api_key: str = None):
 
     logger.info(f"Starting scraping job for keywords: {keywords}")
     logger.info(f"Max videos per keyword: {max_videos}")
+    logger.info(f"Headless Mode: {headless} (Visible: {not headless})")
+    print(f"DEBUG_PRINT: Headless={headless}") # Force print to stdout for UI log capture
 
     if not os.getenv("OPENAI_API_KEY") and not openai_api_key:
          logger.error("CRITICAL: OPENAI_API_KEY not found in environment or CLI args!")
@@ -89,7 +92,7 @@ async def main(keywords: list, max_videos: int, openai_api_key: str = None):
     for keyword in keywords:
         try:
             logger.info(f"Processing keyword: {keyword}")
-            result = await scrape_and_save(keyword, max_videos, db_client, headless=True)
+            result = await scrape_and_save(keyword, max_videos, db_client, headless=headless)
             results.append(result)
             logger.info(f"Completed {keyword}: {result['scraped']} scraped, {result['skipped']} skipped")
         except Exception as e:
@@ -158,6 +161,9 @@ if __name__ == "__main__":
         help="Output JSON file path (optional)"
     )
     parser.add_argument("--openai_key", type=str, default=None, help="Explicit OpenAI API Key")
+    
+    # Simpler flag for visibility
+    parser.add_argument('--visible', action='store_true', help="Show the browser (run in non-headless mode)")
 
     args = parser.parse_args()
 
@@ -175,8 +181,8 @@ if __name__ == "__main__":
     if sys.platform == 'win32':
         asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
 
-    # Pass implicit key to main
-    results = asyncio.run(main(keywords, args.max_videos, explicit_key))
+    # Pass headless=False if visible is True
+    results = asyncio.run(main(keywords, args.max_videos, explicit_key, headless=not args.visible))
 
     # Print results as JSON
     print(json.dumps(results, indent=2))

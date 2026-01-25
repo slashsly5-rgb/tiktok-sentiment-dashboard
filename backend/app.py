@@ -16,6 +16,7 @@ import subprocess
 import textwrap
 import json
 import os
+import time
 from config import Config
 
 # Configure logging
@@ -219,10 +220,8 @@ css_styles = """
 """
 st.markdown(css_styles, unsafe_allow_html=True)
 
-# PERSISTENT LOG VIEWER IN SIDEBAR (Debug)
-if "last_logs" in st.session_state:
-    with st.sidebar.expander("📝 Last Analysis Logs", expanded=True):
-        st.code(st.session_state["last_logs"][-2000:], language="text") # Show last 2000 chars
+# RESET DATABASE (Maintenance) & LOGS moved to main area for visibility
+# ...
 
 # ============================================
 # SIDEBAR (HTML)
@@ -281,13 +280,77 @@ sidebar_html = "".join(line.strip() for line in sidebar_html.split("\n"))
 st.markdown(sidebar_html, unsafe_allow_html=True)
 
 # ============================================
+# REPORT NAVIGATION
+# ============================================
+
+selected_report = "AGGREGATED OVERVIEW"
+report_filter = None
+
+if db:
+    # Fetch available reports (keywords)
+    try:
+        available_reports = db.get_unique_keywords()
+    except AttributeError:
+        # Cache is stale (old db object without new method)
+        st.warning("🔄 Updating system... (Clearing cache)")
+        st.cache_resource.clear()
+        st.rerun()
+    
+    # Add navigation to sidebar (using st.sidebar native or custom)
+    # ============================================
+    # HEADER & REPORT SELECTOR (MOVED UP)
+    # ============================================
+
+    # Main Report Selector (Top of Page)
+    if db and available_reports:
+        col_sel, col_info = st.columns([2, 3])
+        with col_sel:
+            options = ["AGGREGATED OVERVIEW"] + available_reports
+            selected_report = st.selectbox("📑 SELECT REPORT (Topic):", options, index=0, key="report_selector_main")
+            
+        with col_info:
+            if selected_report != "AGGREGATED OVERVIEW":
+                report_filter = selected_report
+                st.success(f"Viewing: **{selected_report}**")
+            else:
+                st.info("Viewing: **AGGREGATED OVERVIEW** (All Data)")
+    else:
+        st.warning("Database not connected or no reports available.")
+
+
+
+# ============================================
 # DATA LOADING
 # ============================================
 overview = None
 videos = []
 if db:
-    overview = db.get_sentiment_overview(days=365)
-    videos = db.get_recent_videos(days=365, include_sentiment=True, limit=50)
+    # Pass report_filter to analytics methods
+    overview = db.get_sentiment_overview(days=365, keyword=report_filter)
+    
+    # get_recent_videos supports keyword filter
+    videos = db.get_recent_videos(days=365, include_sentiment=True, limit=50, keyword=report_filter)
+    
+    # -----------------------------------------------
+    # DOUBLE FAILSAFE: App-Level Filtering
+    # -----------------------------------------------
+    if report_filter and videos:
+        # Strict check: Remove any video that doesn't match the report filter exactly
+        initial_count = len(videos)
+        videos = [v for v in videos if v.get('search_keyword') == report_filter]
+        final_count = len(videos)
+        
+        # DEBUG SENSOR
+        if initial_count != final_count:
+            st.toast(f"🛡️ Security System: Blocked {initial_count - final_count} leaking videos.", icon="🛡️")
+
+    # Debug Data Panel (Hidden by default)
+    with st.expander("🛠️ Debug Data (Filter Status)", expanded=False):
+        st.write(f"Active Report Filter: **{report_filter}**")
+        st.write(f"Videos Loaded: {len(videos)}")
+        if videos:
+            st.write(f"Sample Source: {videos[0].get('search_keyword')}")
+
 
 if not overview:
     overview = {"total_videos": 0, "total_analyzed": 0, "avg_sentiment": 5, "total_views": 0, "sentiment_breakdown": {}}
@@ -300,6 +363,10 @@ avg_sentiment = overview.get('avg_sentiment', 5)
 # ============================================
 # HEADER
 # ============================================
+# Helper placeholder
+# Header moved up to line 300
+
+
 filter_html = """
 <div class="filter-bar">
     <span class="filter-label">TIME PERIOD:</span>
@@ -314,6 +381,37 @@ st.markdown(filter_html, unsafe_allow_html=True)
 # ============================================
 # MAIN LAYOUT
 # ============================================
+
+# SETTINGS & MAINTENANCE (Collapsible)
+with st.expander("⚙️ Settings & Maintenance (Reset Database)", expanded=False):
+    col_m1, col_m2 = st.columns([1, 1])
+    with col_m1:
+        st.warning("⚠️ **Destructive Zone**")
+        if st.button("🗑️ Reset Database (Clear All Data)", type="primary", help="Permanently delete all videos and analysis."):
+             # Force reload DB client to ensure 'clear_all_data' method exists (busting cache)
+             st.cache_resource.clear()
+             db = get_database()
+             
+             if db:
+                with st.spinner("Clearing database..."):
+                    success = db.clear_all_data()
+                    if success:
+                        st.success("✅ Database cleared!")
+                        time.sleep(1)
+                        st.cache_data.clear()
+                        st.cache_resource.clear()
+                        st.rerun()
+                    else:
+                        st.error("Failed to clear database.")
+             else:
+                st.error("Database not connected.")
+    with col_m2:
+        st.info("ℹ️ **Debug Logs**")
+        if "last_logs" in st.session_state:
+            st.code(st.session_state["last_logs"][-1000:], language="text")
+        else:
+            st.write("No logs available.")
+
 col_left, col_right = st.columns([6, 4])
 
 # --- LEFT ---
@@ -329,6 +427,8 @@ with col_left:
             with col_btn:
                 st.markdown("<br>", unsafe_allow_html=True) # Spacer
                 submitted = st.form_submit_button("Start Analysis")
+            
+            show_browser = st.checkbox("Show Browser (Solve Captchas)", value=False, help="Uncheck this if running on Cloud. Check locally to solve puzzles manually.")
         
         if submitted and keyword:
             status_box = st.empty()
@@ -352,6 +452,9 @@ with col_left:
                     "--max", str(count),
                     "--openai_key", Config.OPENAI_API_KEY or ""  # Force explicit key pass
                 ]
+                
+                if show_browser:
+                    cmd.append("--visible")
                 
                 # Prepare environment for subprocess (Critical for Cloud)
                 # Pass explicit secrets because standalone script can't read st.secrets
@@ -390,11 +493,13 @@ with col_left:
 
                 if result.returncode == 0:
                     if found_videos:
-                        status_box.success("✅ Analysis Complete! refreshing data...")
+                        status_box.success("✅ Analysis Complete! Refreshing dashboard...")
+                        # Clear cache to ensure new data is fetched
                         st.cache_data.clear() 
                         st.cache_resource.clear()
-                        # st.rerun() # DISABLE RERUN FOR DEBUGGING
-                        st.info("Analysis finished. Please check the logs below before manually refreshing if needed.")
+                        import time
+                        time.sleep(1) # Give DB a moment to settle
+                        st.rerun() 
                     else:
                         status_box.warning("⚠️ Scraper finished but found 0 videos. See logs/screenshot above.")
                 else:
@@ -453,7 +558,7 @@ with col_left:
     
     
     # Get Key Issues
-    key_issues = db.get_top_issues(days=365, limit=5)
+    key_issues = db.get_top_issues(days=365, limit=5, keyword=report_filter)
     issues_html = ""
     if key_issues:
         for issue in key_issues:
@@ -461,11 +566,15 @@ with col_left:
     else:
         issues_html = '<div style="color:#BDC3C7; font-size:13px; font-style:italic;">No key issues identified yet.</div>'
 
+    report_title = "Briefing Summary"
+    if report_filter:
+        report_title = f"Report: {report_filter}"
+
     briefing_html = f"""<div class="dashboard-card">
     <div style="font-size:11px; font-weight:800; color:#F39C12; text-transform:uppercase; letter-spacing:1px; margin-bottom:15px;">
         <span style="border-left:3px solid #F39C12; padding-left:8px;">{sentiment_label}</span>
     </div>
-    <h3 style="margin-top:0;">Briefing Summary</h3>
+    <h3 style="margin-top:0;">{report_title}</h3>
     <p style="color:#777; font-size:14px; line-height:1.6; margin-bottom:30px;">
         Analysis based on <b>{analyzed_videos} analyzed videos</b> from <b>{overview.get('total_videos')} total videos</b> over the past period.
         <br>Public sentiment is currently leaning <b>{sentiment_label.lower()}</b>.
@@ -497,7 +606,7 @@ with col_left:
     
     st.markdown("<h3>MOST DISCUSSED TOPICS</h3>", unsafe_allow_html=True)
     st.markdown('<div class="dashboard-card" style="padding:10px;">', unsafe_allow_html=True)
-    topics = db.get_top_hashtags(30, 5) if db else []
+    topics = db.get_top_hashtags(30, 5, keyword=report_filter) if db else []
     if topics:
         for t in topics:
             st.markdown(f'<div class="topic-row"><div class="topic-name">{t["hashtag"]}</div><div class="topic-count">{t["video_count"]} videos</div></div>', unsafe_allow_html=True)
@@ -523,10 +632,21 @@ with col_left:
         # summary not needed here since we are compacting it to match screenshot? 
         # Actually screenshot shows author, score, and desc. No summary box.
         
+        tiktok_url = f"https://www.tiktok.com/@{v.get('author_username', 'user')}/video/{v.get('tiktok_id', '')}"
+        
         video_html = f"""
         <div class="video-card" style="padding:15px; margin-bottom:10px;">
             <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
-                <div style="font-weight:700; font-size:12px; color:#333;">@{v.get('author_username')}</div>
+                <div style="font-weight:700; font-size:12px; color:#333;">
+                    <a href="{tiktok_url}" target="_blank" style="text-decoration:none; color:#333; display:flex; align-items:center; gap:4px;">
+                        @{v.get('author_username')}
+                        <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#2980B9" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"></path>
+                            <polyline points="15 3 21 3 21 9"></polyline>
+                            <line x1="10" y1="14" x2="21" y2="3"></line>
+                        </svg>
+                    </a>
+                </div>
                 <div style="font-size:10px; color:#999;">{v.get('sentiment_score', 'N/A')}</div>
             </div>
             <div style="font-size:11px; color:#444; margin-bottom:8px;">{cls.replace('badge-','').upper()}</div>
@@ -661,6 +781,22 @@ with col_right:
             if not topic_title or topic_title == "N/A": 
                 topic_title = v.get('search_keyword') or "unknown topic"
 
+            tiktok_url = f"https://www.tiktok.com/@{v.get('author_username', 'user')}/video/{v.get('tiktok_id', '')}"
+            viral_pot = v.get('viral_potential', 'Low')
+            trend_ctx = v.get('trend_context', '')
+            issues_list = v.get('key_issues', [])
+            
+            # Formatting for Viral Badge
+            viral_color = "#95A5A6"
+            if "High" in viral_pot: viral_color = "#E74C3C"
+            elif "Medium" in viral_pot: viral_color = "#F39C12"
+            
+            # Format Issues List
+            issues_html = ""
+            if issues_list and isinstance(issues_list, list):
+                for issue in issues_list[:3]:
+                    issues_html += f'<li style="margin-bottom:4px;">{issue}</li>'
+            
             card_html = f"""
             <div style="background:white; border:1px solid {border_color}; border-radius:12px; padding:20px; margin-bottom:20px; position:relative; overflow:hidden;">
                 <!-- Left Border Stripe -->
@@ -668,13 +804,28 @@ with col_right:
                 
                 <div style="display:flex; align-items:flex-start; margin-bottom:15px;">
                     <div style="font-size:24px; margin-right:15px; width:30px; text-align:center;">{icon}</div>
-                    <div>
-                        <div style="font-size:16px; font-weight:800; color:#333; margin-bottom:4px; text-transform:capitalize;">{topic_title}</div>
-                        <div style="font-size:13px; color:#555; line-height:1.5;">{body_text}</div>
+                    <div style="flex-grow:1;">
+                        <div style="display:flex; justify-content:space-between; align-items:start;">
+                            <div style="font-size:16px; font-weight:800; color:#333; margin-bottom:4px; text-transform:capitalize; display:flex; align-items:center; gap:8px;">
+                                {topic_title}
+                                <a href="{tiktok_url}" target="_blank" style="font-size:12px; font-weight:400; color:#3498DB; text-decoration:none; background:#F0F8FF; padding:2px 8px; border-radius:10px;">View ↗</a>
+                            </div>
+                            <div style="background:{viral_color}; color:white; padding:2px 8px; border-radius:4px; font-size:9px; font-weight:700; text-transform:uppercase;">
+                                {viral_pot} VIRAL POTENTIAL
+                            </div>
+                        </div>
+                        
+                        <div style="font-size:13px; color:#555; line-height:1.5; margin-bottom:10px;">
+                            <b>Summary:</b> {body_text}
+                        </div>
+                        
+                        {f'<div style="background:#F9F9F9; padding:10px; border-radius:8px; font-size:12px; margin-bottom:10px; border-left:3px solid #DDD;"><b style="color:#555;">Trend Context:</b> {trend_ctx}</div>' if trend_ctx and trend_ctx != "N/A" else ''}
+                        
+                        {f'<div style="font-size:12px; color:#C0392B;"><b>⚠️ Key Issues:</b><ul style="margin:5px 0 0 0; padding-left:20px;">{issues_html}</ul></div>' if issues_html else ''}
                     </div>
                 </div>
                 
-                <div style="display:flex; justify-content:flex-end;">
+                <div style="display:flex; justify-content:flex-end; margin-top:10px;">
                      <div style="background:{bg_light}; color:{text_color}; padding:4px 12px; border-radius:20px; font-size:10px; font-weight:800; text-transform:uppercase; letter-spacing:1px;">
                         {sent_label}
                      </div>
@@ -748,10 +899,17 @@ else:
             pk_issue = v.get('key_issues', [])
             issue_tag = pk_issue[0] if pk_issue and isinstance(pk_issue, list) and len(pk_issue) > 0 else "General Content"
             
+            tiktok_url = f"https://www.tiktok.com/@{v.get('author_username', 'user')}/video/{v.get('tiktok_id', '')}"
+            
             grid_html = f"""
             <div style="background:white; border:1px solid #EEE; border-radius:12px; padding:20px; margin-bottom:20px; box-shadow:0 2px 5px rgba(0,0,0,0.02); height:450px; display:flex; flex-direction:column;">
                 <div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:15px;">
-                    <div style="font-weight:700; font-size:14px; color:#333;">@{v.get('author_username')}</div>
+                    <div style="font-weight:700; font-size:14px; color:#333;">
+                         <a href="{tiktok_url}" target="_blank" style="text-decoration:none; color:#333; display:flex; align-items:center; gap:6px;">
+                            @{v.get('author_username')}
+                            <span style="font-size:12px; opacity:0.7;">🔗</span>
+                        </a>
+                    </div>
                     <div class="badge {cls}">{sent.upper()}</div>
                 </div>
                 
@@ -762,6 +920,7 @@ else:
                 <div style="background:#Fcfcfc; border:1px solid #F0F0F0; padding:10px; border-radius:8px; margin-bottom:10px; flex-grow:1;">
                     <div style="font-size:10px; font-weight:700; color:#999; margin-bottom:4px;">AI SUMMARY:</div>
                     <div style="font-size:11px; color:#444; line-height:1.4;">{summary[:150]}...</div>
+                    <div style="font-size:9px; color:#AAA; margin-top:5px; font-style:italic;">Source Report: {v.get('search_keyword', 'N/A')}</div>
                 </div>
                 
                 <div style="margin-bottom:15px;">
@@ -826,30 +985,49 @@ div[data-testid="stPopover"] button:hover {
 """, unsafe_allow_html=True)
 
 # Context Retrieval Function
-def get_rag_context():
-    """Generates context from current dashboard data for RAG"""
-    # Safely access globals with defaults
-    g_key_issues = globals().get('key_issues', [])
-    g_videos = globals().get('videos', [])
-    g_analyzed = globals().get('analyzed_videos', 0)
-    g_sentiment = globals().get('avg_sentiment', 0)
-    g_label = globals().get('sentiment_label', 'Unknown')
-    g_views = globals().get('total_views', 0)
-
-    topics_list = [i['issue'] for i in g_key_issues] if g_key_issues else 'None'
-    recent_vids = [f"- {v.get('description', '')[:80]}..." for v in g_videos[:5]]
+def get_rag_context(local_videos, local_issues, local_filter):
+    """Generates RICH context from filtered dashboard data"""
+    
+    # Defaults
+    if not local_videos: local_videos = []
+    if not local_issues: local_issues = []
+    current_topic = local_filter or "General/All Data"
+    
+    # Calculate Stats
+    total_vids = len(local_videos)
+    total_views = sum(v.get('views_count', 0) for v in local_videos)
+    avg_score = sum(v.get('sentiment_score', 0) for v in local_videos) / total_vids if total_vids > 0 else 0
+    
+    # Format Issues
+    issues_text = "\n".join([f"- {i['issue']} (Trend: {i.get('trend','stable')})" for i in local_issues[:5]])
+    
+    # Format Video Summaries (Rich Data)
+    # We take top 15 videos to fit in context window (approx 200 tokens each = 3000 tokens)
+    video_summaries = []
+    for i, v in enumerate(local_videos[:15]):
+        summ = v.get('summary', 'N/A')
+        if not summ or summ == "N/A": 
+             summ = v.get('description', '')
+        
+        video_summaries.append(
+            f"Video {i+1}: '{v.get('topic', 'Unknown')}' | Sentiment: {v.get('sentiment')} | Views: {v.get('views_count')} | Summary: {summ[:200]}..."
+        )
+    
+    videos_block = "\n".join(video_summaries)
     
     context = f"""
-    Context Data (Sarawak Political Sentiment):
-    - Total Videos Analyzed: {g_analyzed}
-    - Overall Sentiment Score: {g_sentiment}/10 ({g_label})
-    - Total Views: {g_views}
+    CURRENT REPORT: {current_topic}
     
-    Top Discussed Issues:
-    {topics_list}
+    METRICS:
+    - Analyzed Videos: {total_vids}
+    - Total Engagement: {total_views} views
+    - Average Sentiment: {avg_score:.1f}/10
     
-    Recent Video Topics:
-    {" ".join(recent_vids)}
+    KEY ISSUES IDENTIFIED:
+    {issues_text}
+    
+    DETAILED VIDEO ANALYSIS (Top 15):
+    {videos_block}
     """
     return context
 
@@ -877,10 +1055,12 @@ with st.popover("💬", help="Bumi AI Assistant"):
         else:
             try:
                 client = OpenAI(api_key=api_key)
-                context_data = get_rag_context()
+                
+                # PASS LOCAL VARIABLES DIRECTLY (No Globals)
+                context_data = get_rag_context(videos, key_issues, report_filter)
                 
                 full_prompt = [
-                   {"role": "system", "content": f"You are Bumi, an expert AI analyst for Sarawak political sentiment. Keep answers concise (max 2-3 sentences). Use this data:\n{context_data}"},
+                   {"role": "system", "content": f"You are Bumi, an expert AI analyst. Use the provided Context Data to answer questions about: {report_filter or 'the data'}. \n\nRULES:\n1. Use specific video examples from the context.\n2. Cite view counts to justify trends.\n3. Be concise but insightful.\n\nCONTEXT:\n{context_data}"},
                    {"role": "user", "content": prompt}
                 ]
                 
