@@ -71,7 +71,40 @@ class SupabaseClient:
         except Exception as e:
             logger.error(f"Failed to clear database: {e}")
             return False
+            return False
 
+    def delete_report_data(self, keyword: str) -> bool:
+        """
+        Delete all data associated with a specific report keyword
+        """
+        try:
+            logger.warning(f"EXECUTION DESTRUCTIVE ACTION: Deleting report '{keyword}'...")
+            
+            # 1. Get Video IDs for this keyword
+            videos = self.supabase.table("videos").select("id").eq("search_keyword", keyword).execute()
+            video_ids = [v['id'] for v in videos.data]
+            
+            if not video_ids:
+                logger.info(f"No videos found for keyword '{keyword}'.")
+                return True
+                
+            # 2. Delete related data (manually handling cascade)
+            # Process in chunks to avoid URL length limits if many videos
+            chunk_size = 100
+            for i in range(0, len(video_ids), chunk_size):
+                chunk = video_ids[i:i + chunk_size]
+                self.supabase.table("sentiment_analysis").delete().in_("video_id", chunk).execute()
+                self.supabase.table("comments").delete().in_("video_id", chunk).execute()
+            
+            # 3. Delete Videos
+            self.supabase.table("videos").delete().eq("search_keyword", keyword).execute()
+            
+            logger.info(f"Successfully deleted report '{keyword}'.")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Failed to delete report '{keyword}': {e}")
+            return False
     # ============================================
     # Video Operations
     # ============================================

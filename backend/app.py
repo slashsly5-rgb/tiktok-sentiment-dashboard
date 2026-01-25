@@ -386,8 +386,31 @@ st.markdown(filter_html, unsafe_allow_html=True)
 with st.expander("⚙️ Settings & Maintenance (Reset Database)", expanded=False):
     col_m1, col_m2 = st.columns([1, 1])
     with col_m1:
-        st.warning("⚠️ **Destructive Zone**")
-        if st.button("🗑️ Reset Database (Clear All Data)", type="primary", help="Permanently delete all videos and analysis."):
+        st.markdown('<div style="font-size:12px; font-weight:700; color:#555; margin-bottom:10px;">DESTRUCTIVE ACTIONS</div>', unsafe_allow_html=True)
+        
+        # 1. Selective Delete
+        if available_reports:
+            del_option = st.selectbox("Delete Specific Report", ["Select..."] + available_reports, label_visibility="collapsed")
+            if del_option != "Select...":
+                 if st.button(f"🗑️ Delete '{del_option}' Data", type="primary"):
+                    st.cache_resource.clear()
+                    db = get_database() # Refresh client
+                    if db:
+                         with st.spinner(f"Deleting '{del_option}'..."):
+                            if db.delete_report_data(del_option):
+                                st.success(f"Deleted '{del_option}'!")
+                                time.sleep(1)
+                                st.cache_data.clear()
+                                st.cache_resource.clear()
+                                st.rerun()
+                            else:
+                                st.error("Deletion failed.")
+
+        st.markdown("<hr style='margin:10px 0;'>", unsafe_allow_html=True)
+        
+        # 2. Full Reset
+        st.warning("⚠️ **Reset All Data**")
+        if st.button("☣️ ERASE ENTIRE DATABASE", type="primary", help="Permanently delete ALL videos and analysis."):
              # Force reload DB client to ensure 'clear_all_data' method exists (busting cache)
              st.cache_resource.clear()
              db = get_database()
