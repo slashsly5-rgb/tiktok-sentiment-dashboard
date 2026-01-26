@@ -59,10 +59,19 @@ class TikTokScraper:
         
         if not self.headless:
             args.append('--start-maximized')
-            
+
+        # CLOUD FIX: Force headless if on Linux/Streamlit Cloud
+        # Streamlit Cloud runs on Linux and has no display. 'Visible' mode will crash it.
+        if os.name == 'posix':  # Linux/Mac
+             if not self.headless:
+                 print("WARNING: 'Visible' mode requested but running on Linux/Cloud. Forcing HEADLESS to prevent crash.")
+                 self.headless = True
+        
+        # CLOUD FIX: Do not specify channel="chrome". 
+        # Use bundled chromium which is guaranteed to be present after 'playwright install'
         self.browser = await self.playwright.chromium.launch(
             headless=self.headless,
-            channel="chrome", # Force actual Chrome installation
+            # channel="chrome", # REMOVED: Causes crash on Cloud where only Chromium is available
             args=args
         )
         # Load auth state (preferred) or cookies
