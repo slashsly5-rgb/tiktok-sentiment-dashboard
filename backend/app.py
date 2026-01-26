@@ -526,7 +526,22 @@ with col_left:
                     else:
                         status_box.warning("⚠️ Scraper finished but found 0 videos. See logs/screenshot above.")
                 else:
-                    status_box.error(f"❌ Error during scrape: {result.stderr}")
+                    # Filter junk from stderr
+                    cleaned_err = "\n".join([line for line in result.stderr.split('\n') 
+                                           if "[DEP" not in line 
+                                           and "DeprecationWarning" not in line 
+                                           and "(node:" not in line])
+                    
+                    if not cleaned_err.strip() and "Job completed" in result.stdout:
+                         # False alarm (stderr had warnings but job finished)
+                         status_box.success("✅ Analysis Complete (with warnings). Refreshing...")
+                         st.cache_data.clear()
+                         st.cache_resource.clear()
+                         import time
+                         time.sleep(1)
+                         st.rerun()
+                    else:
+                        status_box.error(f"❌ Error during scrape: {cleaned_err if cleaned_err.strip() else 'Unknown Error (Check Logs)'}")
             except Exception as e:
                 status_box.error(f"❌ Execution failed: {e}")
 
