@@ -232,20 +232,21 @@ class TikTokScraper:
         print(f"Scraping {url}")
         
         data = {'url': url}
-        max_retries = 2
+        data = {'url': url}
+        max_retries = 1 # Optimized: Faster fail
         
         for attempt in range(max_retries + 1):
             try:
                 await page.goto(url)
-                # Random delay to mimic human
-                await asyncio.sleep(random.uniform(2, 5))
+                # Optimized: Shorter delay
+                await asyncio.sleep(random.uniform(1, 2))
                 
                 # Handle "Log in to search" Modal - Aggressive Strategy (Same as search)
                 try:
-                    await asyncio.sleep(2)
+                    await asyncio.sleep(1) # Optimized
                     # 1. Try Escape Key
                     await page.keyboard.press("Escape")
-                    await asyncio.sleep(1)
+                    await asyncio.sleep(0.5) 
                     
                     # 2. Try clicking the "X" button
                     close_selectors = [
@@ -259,7 +260,7 @@ class TikTokScraper:
                     for selector in close_selectors:
                         if await page.is_visible(selector):
                             await page.click(selector)
-                            await asyncio.sleep(1)
+                            await asyncio.sleep(0.5)
                     
                     # 3. Try clicking outside
                     await page.mouse.click(10, 10)
@@ -267,7 +268,7 @@ class TikTokScraper:
 
                 # Wait for load
                 try:
-                    await page.wait_for_load_state('networkidle', timeout=10000)
+                    await page.wait_for_load_state('networkidle', timeout=5000) # Optimized: 5s max
                 except: pass
 
                 # Capture Screenshot for UI
