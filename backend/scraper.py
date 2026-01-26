@@ -481,76 +481,75 @@ async def scrape_and_save(keyword: str, max_videos: int, db_client: SupabaseClie
         skipped_count = 0
         video_ids = []
 
-        for url in video_urls:
-            # Extract TikTok ID
-            tiktok_id = extract_tiktok_id(url)
-            if not tiktok_id:
-                logger.warning(f"Could not extract ID from URL: {url}")
-                continue
+        scraped_count = 0
+        skipped_count = 0
+        video_ids = []
 
-            # Scrape video details
-            logger.info(f"Scraping video {tiktok_id}...")
-            video_data = await scraper.scrape_video_details(url)
+        # Parallel Processing with Semaphore (Max 3 concurrent tabs to save memory)
+        sem = asyncio.Semaphore(3)
 
-            if not video_data:
-                logger.error(f"Failed to scrape video: {url}")
-                continue
+        async def process_video(url):
+            async with sem:
+                tiktok_id = extract_tiktok_id(url)
+                if not tiktok_id:
+                    return None
 
-            # Log captured details for User visibility
-            v_auth = video_data.get("author", "Unknown")
-            v_desc = video_data.get("description", "")[:50].replace("\n", " ") + "..."
-            v_stats = video_data.get("stats", {})
-            logger.info(f"   -> Found: @{v_auth} | {v_desc}")
-            logger.info(f"      Stats: {v_stats.get('views', 'N/A')} views, {v_stats.get('likes', 'N/A')} likes, {v_stats.get('comments', 'N/A')} comments")
+                logger.info(f"Scraping video {tiktok_id}...")
+                video_data = await scraper.scrape_video_details(url)
+                
+                if not video_data:
+                    return None
 
-            # Prepare data for database
-            video_record = {
-                "tiktok_id": tiktok_id,
-                "url": url,
-                "author_username": video_data.get("author", "Unknown"),
-                "description": video_data.get("description", ""),
-                "views_count": int(video_data.get("stats", {}).get("views", 0)) if isinstance(video_data.get("stats", {}).get("views"), int) else 0,
-                "likes_count": int(video_data.get("stats", {}).get("likes", 0)) if isinstance(video_data.get("stats", {}).get("likes"), int) else 0,
-                "shares_count": int(video_data.get("stats", {}).get("shares", 0)) if isinstance(video_data.get("stats", {}).get("shares"), int) else 0,
-                "comments_count": int(video_data.get("stats", {}).get("comments", 0)) if isinstance(video_data.get("stats", {}).get("comments"), int) else 0,
-                "hashtags": video_data.get("hashtags", []),
-                "screenshot_base64": video_data.get("screenshot_base64"),
-                "search_keyword": keyword
-            }
+                # Log details
+                v_auth = video_data.get("author", "Unknown")
+                v_desc = video_data.get("description", "")[:50].replace("\n", " ") + "..."
+                v_stats = video_data.get("stats", {})
+                logger.info(f"   -> Found: @{v_auth} | {v_desc}")
+                
+                # Prepare record
+                video_record = {
+                    "tiktok_id": tiktok_id,
+                    "url": url,
+                    "author_username": video_data.get("author", "Unknown"),
+                    "description": video_data.get("description", ""),
+                    "views_count": int(video_data.get("stats", {}).get("views", 0)) if isinstance(video_data.get("stats", {}).get("views"), int) else 0,
+                    "likes_count": int(video_data.get("stats", {}).get("likes", 0)) if isinstance(video_data.get("stats", {}).get("likes"), int) else 0,
+                    "shares_count": int(video_data.get("stats", {}).get("shares", 0)) if isinstance(video_data.get("stats", {}).get("shares"), int) else 0,
+                    "comments_count": int(video_data.get("stats", {}).get("comments", 0)) if isinstance(video_data.get("stats", {}).get("comments"), int) else 0,
+                    "hashtags": video_data.get("hashtags", []),
+                    "screenshot_base64": video_data.get("screenshot_base64"),
+                    "search_keyword": keyword
+                }
+                return (video_record, video_data.get("comments", []))
 
-            # Check if already exists in database
-            existing = db_client.get_video_by_tiktok_id(tiktok_id)
+        # Run tasks
+        logger.info(f"Parallel scraping started for {len(video_urls)} videos...")
+        tasks = [process_video(url) for url in video_urls]
+        results = await asyncio.gather(*tasks)
+        
+        # Save to DB (Sequentially to avoid locks)
+        for res in results:
+            if not res: continue
             
+            video_record, comments = res
+            tiktok_id = video_record["tiktok_id"]
+            
+            # DB Operations
+            existing = db_client.get_video_by_tiktok_id(tiktok_id)
             if existing:
-                # Update existing video
                 success = db_client.update_video(video_record)
                 if success:
-                    logger.info(f"Updated video {tiktok_id} with new stats")
                     scraped_count += 1
                     video_ids.append(existing["id"])
-                else:
-                    logger.error(f"Failed to update video {tiktok_id}")
             else:
-                # Insert new video
                 video_id = db_client.insert_video(video_record)
-
                 if video_id:
-                    logger.info(f"Saved video {tiktok_id} to database with ID {video_id}")
                     scraped_count += 1
                     video_ids.append(video_id)
-
                     # Insert comments
-                    comments = video_data.get("comments", [])
                     if comments:
-                        comment_records = [
-                            {
-                                "author_username": "Unknown",
-                                "comment_text": comment,
-                                "likes_count": 0
-                            }
-                            for comment in comments
-                        ]
-                        db_client.insert_comments(video_id, comment_records)
+                         comment_records = [{"author_username": "Unknown", "comment_text": c, "likes_count": 0} for c in comments]
+                         db_client.insert_comments(video_id, comment_records)
                 else:
                     logger.error(f"Failed to save video {tiktok_id} to database")
 
