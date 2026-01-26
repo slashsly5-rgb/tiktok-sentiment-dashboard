@@ -525,23 +525,33 @@ with col_left:
                         st.rerun() 
                     else:
                         status_box.warning("⚠️ Scraper finished but found 0 videos. See logs/screenshot above.")
-                else:
                     # Filter junk from stderr
                     cleaned_err = "\n".join([line for line in result.stderr.split('\n') 
                                            if "[DEP" not in line 
                                            and "DeprecationWarning" not in line 
-                                           and "(node:" not in line])
+                                           and "(node:" not in line
+                                           and "trace-deprecation" not in line])
                     
-                    if not cleaned_err.strip() and "Job completed" in result.stdout:
-                         # False alarm (stderr had warnings but job finished)
-                         status_box.success("✅ Analysis Complete (with warnings). Refreshing...")
+                    # Logic Check: If the job printed "Job completed", it finished.
+                    # Warnings in stderr should not mask a success.
+                    job_success = "Job completed" in result.stdout
+                    
+                    if job_success:
+                         if found_videos:
+                             status_box.success("✅ Analysis Complete! Refreshing...")
+                         else:
+                             status_box.warning("⚠️ Scraper finished but found 0 videos (Likely blocked). See debug screenshot below.")
+                             
                          st.cache_data.clear()
                          st.cache_resource.clear()
                          import time
                          time.sleep(1)
-                         st.rerun()
+                         if found_videos:
+                             st.rerun()
                     else:
-                        status_box.error(f"❌ Error during scrape: {cleaned_err if cleaned_err.strip() else 'Unknown Error (Check Logs)'}")
+                        # Only show error if job actually CRASHED (no completion message)
+                        err_msg = cleaned_err if cleaned_err.strip() else 'Unknown Error (Check Logs)'
+                        status_box.error(f"❌ Error during scrape: {err_msg}")
             except Exception as e:
                 status_box.error(f"❌ Execution failed: {e}")
 
