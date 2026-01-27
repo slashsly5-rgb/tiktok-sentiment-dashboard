@@ -84,7 +84,7 @@ class TikTokScraper:
             # Create context with storage state (Cookies + LocalStorage)
             self.context = await self.browser.new_context(
                 storage_state=auth_file,
-                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36",
+                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36",
                 viewport={'width': 1280, 'height': 720},
                 locale='en-US',
                 timezone_id='America/New_York'
@@ -93,7 +93,7 @@ class TikTokScraper:
         else:
             # Fallback to standard context (and maybe cookies.json)
             self.context = await self.browser.new_context(
-                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
+                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36",
                 viewport={'width': 1280, 'height': 720},
                 locale='en-US',
                 timezone_id='America/New_York'
@@ -105,9 +105,6 @@ class TikTokScraper:
                         cookies = json.load(f)
                     await self.context.add_cookies(cookies)
                     logger.info(f"Loaded {len(cookies)} cookies from {cookie_file}")
-                except Exception as e:
-                    logger.error(f"Failed to load cookies: {e}")
-
                 except Exception as e:
                     logger.error(f"Failed to load cookies: {e}")
 
