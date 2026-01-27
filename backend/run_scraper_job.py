@@ -24,7 +24,14 @@ from analyzer import batch_analyze_unanalyzed
 from config import Config
 import logging
 
-# ...
+# Configure logging to STDOUT for dashboard capture
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(message)s', 
+    handlers=[logging.StreamHandler(sys.stdout)],
+    force=True
+)
+logger = logging.getLogger(__name__)
 
 async def main(keywords: list, max_videos: int, openai_api_key: str = None, headless: bool = True, direct_urls: list = None):
     """
