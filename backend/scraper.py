@@ -483,19 +483,6 @@ class TikTokScraper:
             except Exception as e:
                 print(f"DOM stats extraction failed: {e}")
 
-    def _parse_stat(self, text):
-        """Helper to parse '1.2M', '10K', '100'"""
-        if not text: return 0
-        text = str(text) # Safety
-        text = text.upper().replace('K', '000').replace('M', '000000').replace('B', '000000000').replace('.', '')
-        try:
-            val = text.replace(',', '')
-            if 'K' in text: val = float(text.replace('K', '')) * 1000
-            elif 'M' in text: val = float(text.replace('M', '')) * 1000000
-            elif 'B' in text: val = float(text.replace('B', '')) * 1000000000
-            return int(float(val))
-        except: return 0
-
         # Thumbnail
         if not data.get('thumbnail'):
             try:
@@ -513,6 +500,7 @@ class TikTokScraper:
                 data['author'] = await author_el.inner_text() if author_el else "Unknown Author"
             except: data['author'] = ""
 
+        # Hashtags (DOM Fallback)
         if 'hashtags' not in data:
             try:
                 tag_els = await page.query_selector_all('a[href*="/tag/"]')
@@ -542,6 +530,19 @@ class TikTokScraper:
 
         await page.close()
         return data
+
+    def _parse_stat(self, text):
+        """Helper to parse '1.2M', '10K', '100'"""
+        if not text: return 0
+        text = str(text) 
+        text = text.upper().replace('K', '000').replace('M', '000000').replace('B', '000000000').replace('.', '')
+        try:
+            val = text.replace(',', '')
+            if 'K' in text: val = float(text.replace('K', '')) * 1000
+            elif 'M' in text: val = float(text.replace('M', '')) * 1000000
+            elif 'B' in text: val = float(text.replace('B', '')) * 1000000000
+            return int(float(val))
+        except: return 0
 
 async def _save_video_to_db(db_client, video_record, comments):
     """Helper to save video and comments to DB"""
