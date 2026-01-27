@@ -475,6 +475,12 @@ class TikTokScraper:
                 if comm_el: dom_stats['comments'] = self._parse_stat(await comm_el.inner_text())
                 
                 # Shares 
+                # Wait for interaction/stats to load (Critical for DOM scraping)
+                try:
+                    await page.wait_for_selector('[data-e2e="like-count"]', state="visible", timeout=8000)
+                except: 
+                    logger.warning("Timeout waiting for stats selector")
+
                 share_el = await page.query_selector('[data-e2e="share-count"]')
                 if share_el: dom_stats['shares'] = self._parse_stat(await share_el.inner_text())
                 
@@ -495,9 +501,25 @@ class TikTokScraper:
         # Author
         if not data.get('author'):
             try:
-                author_el = await page.query_selector('[data-e2e="browse-user-detail"] h3')
-                if not author_el: author_el = await page.query_selector('span[data-e2e="browse-username"]')
-                data['author'] = await author_el.inner_text() if author_el else "Unknown Author"
+                # Priority: Data Attributes -> H3 -> UniqueID -> Link with @
+                author_selectors = [
+                    '[data-e2e="browse-user-detail"] h3',
+                    '[data-e2e="browse-username"]', 
+                    '[data-e2e="video-author-uniqueid"]',
+                    'a[href^="/@"]',
+                    'h3'
+                ]
+                
+                for sel in author_selectors:
+                    el = await page.query_selector(sel)
+                    if el:
+                        text = await el.inner_text()
+                        if text:
+                             # Cleanup (remove @ if present)
+                             data['author'] = text.replace('@', '').strip()
+                             break
+                
+                if not data.get('author'): data['author'] = "Unknown Author"
             except: data['author'] = ""
 
         # Hashtags (DOM Fallback)
