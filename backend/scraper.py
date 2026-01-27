@@ -448,6 +448,14 @@ class TikTokScraper:
                 # 2. Try Page Title
                 if not data.get('description'):
                     title = await page.title()
+                    # DETECT GENERIC PAGE (Login Wall / Home)
+                    if "Make Your Day" in title or title.strip() == "TikTok" or "Log in" in title:
+                        logger.warning(f"⚠️ Redirected to Generic Page (Login/Home). Retrying or Skipping {url}...")
+                        # We can either retry or just return None to skip invalid data
+                        # Let's try to reload once? Or just fail fast.
+                        # For now, FAIL FAST so we don't save garbage.
+                        return None
+                        
                     # Title format: "Description | Author | TikTok" or similar
                     if "|" in title:
                         data['description'] = title.split('|')[0].strip()
