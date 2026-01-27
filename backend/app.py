@@ -886,11 +886,13 @@ with col_right:
             if "High" in viral_pot: viral_color = "#E74C3C"
             elif "Medium" in viral_pot: viral_color = "#F39C12"
             
-            # Format Issues List
-            issues_html = ""
+            # Format Insight Tags
+            insight_html = ""
             if issues_list and isinstance(issues_list, list):
                 for issue in issues_list[:3]:
-                    issues_html += f'<li style="margin-bottom:4px;">{issue}</li>'
+                     insight_html += f'<span style="background:#FFF3E0; color:#E67E22; padding:3px 8px; border-radius:4px; font-size:10px; font-weight:600; margin-right:4px;">{issue}</span>'
+            else:
+                 insight_html = '<span style="background:#f0f0f0; color:#999; padding:3px 8px; border-radius:4px; font-size:10px;">General</span>'
             
             card_html = f"""
             <div style="background:white; border:1px solid {border_color}; border-radius:12px; padding:20px; margin-bottom:20px; position:relative; overflow:hidden;">
@@ -910,13 +912,19 @@ with col_right:
                             </div>
                         </div>
                         
-                        <div style="font-size:13px; color:#555; line-height:1.5; margin-bottom:10px;">
-                            <b>Summary:</b> {body_text}
+                        <div style="background:#Fcfcfc; border:1px solid #F0F0F0; padding:10px; border-radius:8px; margin-bottom:10px; margin-top:5px;">
+                            <div style="font-size:10px; font-weight:700; color:#999; margin-bottom:4px;">VIDEO SUMMARY & INSIGHTS:</div>
+                            <div style="font-size:12px; color:#555; line-height:1.5;">{body_text[:500]}</div>
                         </div>
                         
-                        {f'<div style="background:#F9F9F9; padding:10px; border-radius:8px; font-size:12px; margin-bottom:10px; border-left:3px solid #DDD;"><b style="color:#555;">Trend Context:</b> {trend_ctx}</div>' if trend_ctx and trend_ctx != "N/A" else ''}
+                        <div style="margin-top:10px;">
+                             <div style="font-size:10px; font-weight:700; color:#999; margin-bottom:4px;">MAIN TOPICS:</div>
+                             <div style="display:flex; flex-wrap:wrap; gap:4px;">
+                                {insight_html}
+                             </div>
+                        </div>
                         
-                        {f'<div style="font-size:12px; color:#C0392B;"><b>⚠️ Key Issues:</b><ul style="margin:5px 0 0 0; padding-left:20px;">{issues_html}</ul></div>' if issues_html else ''}
+                        {f'<div style="margin-top:10px; font-size:11px; color:#777; border-left:3px solid #DDD; padding-left:8px;"><b>Context:</b> {trend_ctx}</div>' if trend_ctx and trend_ctx != "N/A" else ''}
                     </div>
                 </div>
                 
