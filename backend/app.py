@@ -66,19 +66,20 @@ if not db:
 # ============================================
 css_styles = """
 <style>
-    /* VARIABLES */
+    /* VARIABLES (DARK MODE) */
     :root {
-        --bg-color: #F8F5F2;
+        --bg-color: #0E1117;
         --sidebar-bg: #1E1E1E;
-        --card-bg: #FFFFFF;
+        --card-bg: #262730;
         --gold: #F1C40F;
-        --text-dark: #2C3E50;
-        --text-light: #7F8C8D;
+        --text-dark: #FFFFFF;
+        --text-light: #A0A0A0;
         --positive: #2ECC71;
         --neutral: #F39C12;
         --negative: #E74C3C;
     }
-    .stApp { background-color: var(--bg-color); }
+    /* Force main background to dark */
+    .stApp { background-color: var(--bg-color); color: var(--text-dark); }
     header, footer, #MainMenu { visibility: hidden; }
     [data-testid="stSidebar"] { display: none; } 
 
@@ -162,8 +163,8 @@ css_styles = """
     /* CARDS */
     .dashboard-card {
         background-color: var(--card-bg); border-radius: 12px; padding: 24px;
-        margin-bottom: 20px; box-shadow: 0 4px 6px rgba(0,0,0,0.02);
-        border: 1px solid #EAEAEA;
+        margin-bottom: 20px; box-shadow: 0 4px 6px rgba(0,0,0,0.2);
+        border: 1px solid #333;
     }
     h3 {
         color: var(--text-dark); font-size: 18px; font-weight: 800;
@@ -178,17 +179,17 @@ css_styles = """
     }
     .meter-thumb {
         width: 20px; height: 20px; background: white;
-        border: 4px solid #BDC3C7; border-radius: 50%;
-        position: absolute; top: -6px; box-shadow: 0 2px 4px rgba(0,0,0,0.2);
+        border: 4px solid #555; border-radius: 50%;
+        position: absolute; top: -6px; box-shadow: 0 2px 4px rgba(0,0,0,0.5);
         transform: translateX(-50%);
     }
 
     /* STAT BOXES */
     .stat-box {
-        border: 1px solid #EEE; border-radius: 8px; padding: 15px 10px;
-        text-align: center; background: white; height: 100%;
+        border: 1px solid #444; border-radius: 8px; padding: 15px 10px;
+        text-align: center; background: var(--card-bg); height: 100%;
     }
-    .stat-value { font-size: 24px; font-weight: 800; color: #333; }
+    .stat-value { font-size: 24px; font-weight: 800; color: var(--text-dark); }
     .stat-label { font-size: 10px; font-weight: 700; text-transform: uppercase; margin-top: 5px; }
     .stat-label.pos { color: #2ECC71; }
     .stat-label.neu { color: #F39C12; }
@@ -895,7 +896,7 @@ with col_right:
                  insight_html = '<span style="background:#f0f0f0; color:#999; padding:3px 8px; border-radius:4px; font-size:10px;">General</span>'
             
             card_html = f"""
-            <div style="background:white; border:1px solid {border_color}; border-radius:12px; padding:20px; margin-bottom:20px; position:relative; overflow:hidden;">
+            <div style="background:#262730; border:1px solid #444; border-radius:12px; padding:20px; margin-bottom:20px; position:relative; overflow:hidden;">
                 <!-- Left Border Stripe -->
                 <div style="position:absolute; left:0; top:0; bottom:0; width:6px; background:{border_color};"></div>
                 
@@ -903,28 +904,28 @@ with col_right:
                     <div style="font-size:24px; margin-right:15px; width:30px; text-align:center;">{icon}</div>
                     <div style="flex-grow:1;">
                         <div style="display:flex; justify-content:space-between; align-items:start;">
-                            <div style="font-size:16px; font-weight:800; color:#333; margin-bottom:4px; text-transform:capitalize; display:flex; align-items:center; gap:8px;">
+                            <div style="font-size:16px; font-weight:800; color:#FAFAFA; margin-bottom:4px; text-transform:capitalize; display:flex; align-items:center; gap:8px;">
                                 {topic_title}
-                                <a href="{tiktok_url}" target="_blank" style="font-size:12px; font-weight:400; color:#3498DB; text-decoration:none; background:#F0F8FF; padding:2px 8px; border-radius:10px;">View ↗</a>
+                                <a href="{tiktok_url}" target="_blank" style="font-size:12px; font-weight:400; color:#3498DB; text-decoration:none; background:#1E1E1E; padding:2px 8px; border-radius:10px; border:1px solid #555;">View ↗</a>
                             </div>
                             <div style="background:{viral_color}; color:white; padding:2px 8px; border-radius:4px; font-size:9px; font-weight:700; text-transform:uppercase;">
                                 {viral_pot} VIRAL POTENTIAL
                             </div>
                         </div>
                         
-                        <div style="background:#Fcfcfc; border:1px solid #F0F0F0; padding:10px; border-radius:8px; margin-bottom:10px; margin-top:5px;">
-                            <div style="font-size:10px; font-weight:700; color:#999; margin-bottom:4px;">VIDEO SUMMARY & INSIGHTS:</div>
-                            <div style="font-size:12px; color:#555; line-height:1.5;">{body_text[:500]}</div>
+                        <div style="background:#1A1A1A; border:1px solid #333; padding:10px; border-radius:8px; margin-bottom:10px; margin-top:5px;">
+                            <div style="font-size:10px; font-weight:700; color:#888; margin-bottom:4px;">VIDEO SUMMARY & INSIGHTS:</div>
+                            <div style="font-size:12px; color:#CCC; line-height:1.5;">{body_text[:500]}</div>
                         </div>
                         
                         <div style="margin-top:10px;">
-                             <div style="font-size:10px; font-weight:700; color:#999; margin-bottom:4px;">MAIN TOPICS:</div>
+                             <div style="font-size:10px; font-weight:700; color:#888; margin-bottom:4px;">MAIN TOPICS:</div>
                              <div style="display:flex; flex-wrap:wrap; gap:4px;">
                                 {insight_html}
                              </div>
                         </div>
                         
-                        {f'<div style="margin-top:10px; font-size:11px; color:#777; border-left:3px solid #DDD; padding-left:8px;"><b>Context:</b> {trend_ctx}</div>' if trend_ctx and trend_ctx != "N/A" else ''}
+                        {f'<div style="margin-top:10px; font-size:11px; color:#999; border-left:3px solid #555; padding-left:8px;"><b>Context:</b> {trend_ctx}</div>' if trend_ctx and trend_ctx != "N/A" else ''}
                     </div>
                 </div>
                 
@@ -1012,10 +1013,10 @@ else:
             tiktok_url = f"https://www.tiktok.com/@{v.get('author_username', 'user')}/video/{v.get('tiktok_id', '')}"
             
             grid_html = f"""
-            <div style="background:white; border:1px solid #EEE; border-radius:12px; padding:20px; margin-bottom:20px; box-shadow:0 2px 5px rgba(0,0,0,0.02); height:500px; display:flex; flex-direction:column;">
+            <div style="background:#262730; border:1px solid #444; border-radius:12px; padding:20px; margin-bottom:20px; box-shadow:0 2px 5px rgba(0,0,0,0.2); height:500px; display:flex; flex-direction:column;">
                 <div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:15px;">
-                    <div style="font-weight:700; font-size:14px; color:#333;">
-                         <a href="{tiktok_url}" target="_blank" style="text-decoration:none; color:#333; display:flex; align-items:center; gap:6px;">
+                    <div style="font-weight:700; font-size:14px; color:#FAFAFA;">
+                         <a href="{tiktok_url}" target="_blank" style="text-decoration:none; color:#FAFAFA; display:flex; align-items:center; gap:6px;">
                             @{v.get('author_username')}
                             <span style="font-size:12px; opacity:0.7;">🔗</span>
                         </a>
@@ -1023,24 +1024,24 @@ else:
                     <div class="badge {cls}">{sent.upper()}</div>
                 </div>
                 
-                <div style="font-size:13px; color:#555; margin-bottom:15px; flex-grow:0; height:60px; overflow:hidden; line-height:1.4;">
+                <div style="font-size:13px; color:#CCC; margin-bottom:15px; flex-grow:0; height:60px; overflow:hidden; line-height:1.4;">
                     {desc}
                 </div>
                 
-                <div style="background:#Fcfcfc; border:1px solid #F0F0F0; padding:10px; border-radius:8px; margin-bottom:10px; flex-grow:1; overflow-y:auto;">
-                    <div style="font-size:10px; font-weight:700; color:#999; margin-bottom:4px;">VIDEO SUMMARY & INSIGHTS:</div>
-                    <div style="font-size:11px; color:#444; line-height:1.4;">{summary[:500]}</div>
-                    <div style="font-size:9px; color:#AAA; margin-top:5px; font-style:italic;">Source Report: {v.get('search_keyword', 'N/A')}</div>
+                <div style="background:#1A1A1A; border:1px solid #333; padding:10px; border-radius:8px; margin-bottom:10px; flex-grow:1; overflow-y:auto;">
+                    <div style="font-size:10px; font-weight:700; color:#888; margin-bottom:4px;">VIDEO SUMMARY & INSIGHTS:</div>
+                    <div style="font-size:11px; color:#DDD; line-height:1.4;">{summary[:500]}</div>
+                    <div style="font-size:9px; color:#666; margin-top:5px; font-style:italic;">Source Report: {v.get('search_keyword', 'N/A')}</div>
                 </div>
                 
                 <div style="margin-bottom:15px;">
-                     <div style="font-size:10px; font-weight:700; color:#999; margin-bottom:4px;">MAIN TOPICS:</div>
+                     <div style="font-size:10px; font-weight:700; color:#888; margin-bottom:4px;">MAIN TOPICS:</div>
                      <div style="display:flex; flex-wrap:wrap; gap:4px;">
                         {insight_html}
                      </div>
                 </div>
                 
-                <div style="border-top:1px solid #F5F5F5; padding-top:12px; display:flex; justify-content:space-between; color:#AAA; font-size:12px;">
+                <div style="border-top:1px solid #333; padding-top:12px; display:flex; justify-content:space-between; color:#999; font-size:12px;">
                     <span title="Views">👁️ {fmt_num(v.get('views_count',0))}</span>
                     <span title="Likes">❤️ {fmt_num(v.get('likes_count',0))}</span>
                     <span title="Comments">💬 {fmt_num(v.get('stats_comment_count',0))}</span>
