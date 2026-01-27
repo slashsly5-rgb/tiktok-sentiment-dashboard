@@ -533,7 +533,7 @@ with col_left:
                 # Also ensure PYTHONPATH includes backend for imports if needed
                 env["PYTHONPATH"] = str(backend_dir)
                 
-                with st.spinner(f"Running analysis for '{keyword}'... This may take a minute."):
+                with st.spinner(f"Running analysis for '{target_input}'... This may take a minute."):
                     # Run in backend dir so imports work
                     result = subprocess.run(cmd, capture_output=True, text=True, cwd=str(backend_dir), env=env)
                 
