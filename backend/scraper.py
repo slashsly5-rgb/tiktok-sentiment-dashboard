@@ -527,28 +527,74 @@ class TikTokScraper:
             try:
                 tag_els = await page.query_selector_all('a[href*="/tag/"]')
                 data['hashtags'] = [await t.inner_text() for t in tag_els]
+
+                # 4. Try parsing hashtags from description if empty
+                if not data['hashtags'] and data.get('description'):
+                    import re
+                    data['hashtags'] = re.findall(r"#(\w+)", data['description'])
             except: data['hashtags'] = []
 
-        # Comments (Scroll and scrape)
-        await page.evaluate("window.scrollTo(0, 500)")
-        await asyncio.sleep(3)
+        # Stats (DOM Fallback)
+        if 'stats' not in data: data['stats'] = {}
+        
+        # Ensure stats dict exists and has defaults
+        for k in ['views', 'likes', 'comments', 'shares']:
+            if k not in data['stats']: data['stats'][k] = 0
+
+        try:
+             # Likes
+            like_el = await page.query_selector('[data-e2e="like-count"]')
+            if like_el: data['stats']['likes'] = self._parse_stat(await like_el.inner_text())
+
+            # Comments Count
+            comm_el = await page.query_selector('[data-e2e="comment-count"]')
+            if comm_el: data['stats']['comments'] = self._parse_stat(await comm_el.inner_text())
+
+            # Shares Count
+            share_el = await page.query_selector('[data-e2e="share-count"]')
+            if share_el: data['stats']['shares'] = self._parse_stat(await share_el.inner_text())
+        except: pass
+
+        # Comments Text (Scroll and scrape)
+        # Scroll down multiple times to trigger loading
+        for _ in range(3):
+            await page.evaluate("window.scrollBy(0, 800)")
+            await asyncio.sleep(1)
         
         comments = []
         try:
-            comment_elements = await page.query_selector_all('[data-e2e="comment-level-1"]')
-            if not comment_elements:
-                 comment_elements = await page.query_selector_all('div[class*="DivCommentContentContainer"]')
-    
+            # Broad selectors for comments
+            selectors = [
+                 '[data-e2e="comment-level-1"]', 
+                 'div[class*="DivCommentContentContainer"]',
+                 'div[class*="CommentItem"]',
+                 '.css-1i7ohvi-DivCommentItemContainer'
+            ]
+            
+            comment_elements = []
+            for sel in selectors:
+                els = await page.query_selector_all(sel)
+                if els:
+                    comment_elements = els
+                    break
+
             for el in comment_elements[:20]: 
+                # Try getting text from P or div
                 text_el = await el.query_selector('p[data-e2e="comment-level-1__content"]')
                 if not text_el: text_el = await el.query_selector('p')
+                if not text_el: text_el = await el.query_selector('span')
+                
                 if text_el:
                     text = await text_el.inner_text()
-                    if "trouble playing" not in text:
+                    # Filter junk
+                    if len(text) > 2 and "trouble playing" not in text and "Reply" not in text:
                         comments.append(text)
         except: pass
         
         data['comments'] = comments
+        
+        # Final Debug Log
+        print(f"Scraped Data: {data.get('stats')} | Comments: {len(comments)}")
 
         await page.close()
         return data
