@@ -72,7 +72,8 @@ class TikTokScraper:
         self.browser = await self.playwright.chromium.launch(
             headless=self.headless,
             # channel="chrome", # REMOVED: Causes crash on Cloud where only Chromium is available
-            args=args
+            args=args,
+            ignore_default_args=["--enable-automation"]
         )
         # Load auth state (preferred) or cookies
         root_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -111,22 +112,42 @@ class TikTokScraper:
                     logger.error(f"Failed to load cookies: {e}")
 
         # --- STEALTH UPGRADE ---
-        # "Playwright Stealth" injects multiple scripts to hide Headless detection
-        # (WebGL, Permissions, Plugins, Languages, Console debugs, etc.)
+        # Robust manual injection to mask automation signals
+        await self.context.add_init_script("""
+            // 1. Mask WebDriver
+            Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+            
+            // 2. Mock Plugins (Chrome obviously has plugins)
+            Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] });
+            
+            // 3. Mock Chrome Runtime
+            window.chrome = { runtime: {} };
+            
+            // 4. Reset Permissions Query
+            const originalQuery = window.navigator.permissions.query;
+            window.navigator.permissions.query = (parameters) => (
+                parameters.name === 'notifications' ?
+                Promise.resolve({ state: 'denied' }) :
+                originalQuery(parameters)
+            );
+            
+            // 5. WebGL vendor spoofing (Generic Intel/Google)
+            const getParameter = WebGLRenderingContext.prototype.getParameter;
+            WebGLRenderingContext.prototype.getParameter = function(parameter) {
+                if (parameter === 37445) return 'Google Inc. (Intel)';
+                if (parameter === 37446) return 'ANGLE (Intel, Intel(R) HD Graphics 620 Direct3D11 vs_5_0 ps_5_0, or similar)';
+                return getParameter(parameter);
+            };
+        """)
+        
         try:
             from playwright_stealth import stealth_async
             page_temp = await self.context.new_page()
             await stealth_async(page_temp)
             await page_temp.close()
-            logger.info("🛡️ Stealth Mode Initiated: playwright-stealth active.")
+            logger.info("🛡️ Stealth Mode: playwright-stealth module active + Manual Overrides.")
         except ImportError:
-            logger.warning("Stealth module not found. Running with basic masking.")
-            # Fallback handling
-            await self.context.add_init_script("""
-                Object.defineProperty(navigator, 'webdriver', {
-                    get: () => undefined
-                });
-            """)
+            logger.info("🛡️ Stealth Mode: Manual Injection Active (Module not found).")
         except Exception as e:
             logger.error(f"Stealth injection failed: {e}")
 
