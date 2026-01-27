@@ -35,7 +35,10 @@ try:
     k = Config.OPENAI_API_KEY
     suffix = k[-8:] if k and len(k) > 10 else "MISSING/SHORT"
     st.sidebar.warning(f"🔑 Loaded Key Suffix: ...{suffix}")
-    # Also put it on main page top for visibility if sidebar is hidden
+    
+    # SYSTEM UPGRADE BANNER
+    st.success("✅ **SYSTEM UPDATED v3.1:** Detailed Summarization & Insights Engine Online")
+
     if "Is6E" in suffix:
         st.error(f"🚨 ACTIVE KEY IS OLD! Suffix: ...{suffix}. Please Reboot App completely.")
     else:
