@@ -441,22 +441,65 @@ col_left, col_right = st.columns([6, 4])
 with col_left:
     # SCRAPER INPUT WIDGET
     with st.expander("🚀 Start New Analysis (Scrape Videos)", expanded=False):
-        with st.form("scrape_form"):
-            col_k, col_n, col_btn = st.columns([3, 1, 1])
-            with col_k:
-                keyword = st.text_input("Keyword / Hashtag", placeholder="e.g. #sarawak")
-            with col_n:
-                count = st.number_input("Max Videos", min_value=1, max_value=50, value=5)
-            with col_btn:
-                st.markdown("<br>", unsafe_allow_html=True) # Spacer
-                submitted = st.form_submit_button("Start Analysis")
-            
-            show_browser = st.checkbox("Show Browser (Solve Captchas)", value=False, help="Uncheck this if running on Cloud. Check locally to solve puzzles manually.")
         
-        if submitted and keyword:
+        tab_keyword, tab_url = st.tabs(["Keyword Search", "Single Video"])
+        
+        mode = "keyword"
+        target_input = ""
+        max_vids = 5
+        show_browser = False
+        submitted = False
+        
+        # TAB 1: KEYWORD
+        with tab_keyword:
+            with st.form("scrape_form_keyword"):
+                col_k, col_n, col_btn = st.columns([3, 1, 1])
+                with col_k:
+                    k_input = st.text_input("Keyword / Hashtag", placeholder="e.g. #sarawak")
+                with col_n:
+                    count = st.number_input("Max Videos", min_value=1, max_value=50, value=5)
+                with col_btn:
+                    st.markdown("<br>", unsafe_allow_html=True) 
+                    submitted_k = st.form_submit_button("Start Analysis")
+                
+                show_browser_k = st.checkbox("Show Browser (Solve Captchas)", value=False, key="chk_k")
+                
+                if submitted_k:
+                    mode = "keyword"
+                    target_input = k_input
+                    max_vids = count
+                    show_browser = show_browser_k
+                    submitted = True
+
+        # TAB 2: SINGLE VIDEO
+        with tab_url:
+             with st.form("scrape_form_url"):
+                col_u, col_btn_u = st.columns([4, 1])
+                with col_u:
+                    u_input = st.text_input("TikTok Video URL", placeholder="https://www.tiktok.com/@user/video/1234567890")
+                with col_btn_u:
+                    st.markdown("<br>", unsafe_allow_html=True) 
+                    submitted_u = st.form_submit_button("Scrape Video")
+                
+                show_browser_u = st.checkbox("Show Browser (Solve Captchas)", value=False, key="chk_u")
+                
+                if submitted_u:
+                    mode = "url"
+                    target_input = u_input
+                    max_vids = 1 # Single video
+                    show_browser = show_browser_u
+                    submitted = True
+
+        if submitted and target_input:
             status_box = st.empty()
-            status_box.info(f"⏳ Scraping {count} videos for '{keyword}'... Please wait.")
             
+            if mode == "keyword":
+                status_box.info(f"⏳ Scraping {max_vids} videos for '{target_input}'... Please wait.")
+                cmd_args = ["--keywords", target_input, "--max", str(max_vids)]
+            else:
+                status_box.info(f"⏳ Scraping Single Video... Please wait.")
+                cmd_args = ["--urls", target_input]
+
             try:
                 # Run the scraper script as a subprocess
                 # Fix: Use absolute path relative to this file to find run_scraper_job.py in root
@@ -468,16 +511,17 @@ with col_left:
                 backend_dir = repo_root / "backend"
                 scraper_script = backend_dir / "run_scraper_job.py"
                 
-                cmd = [
+                base_cmd = [
                     sys.executable, 
-                    str(scraper_script), 
-                    "--keywords", keyword, 
-                    "--max", str(count),
+                    str(scraper_script)
+                ] + cmd_args + [
                     "--openai_key", Config.OPENAI_API_KEY or ""  # Force explicit key pass
                 ]
                 
                 if show_browser:
-                    cmd.append("--visible")
+                    base_cmd.append("--visible")
+                
+                cmd = base_cmd # Alias for clarity
                 
                 # Prepare environment for subprocess (Critical for Cloud)
                 # Pass explicit secrets because standalone script can't read st.secrets

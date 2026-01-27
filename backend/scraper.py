@@ -107,12 +107,28 @@ class TikTokScraper:
                 except Exception as e:
                     logger.error(f"Failed to load cookies: {e}")
 
-        # Add init script to hide webdriver property
-        await self.context.add_init_script("""
-            Object.defineProperty(navigator, 'webdriver', {
-                get: () => undefined
-            });
-        """)
+                except Exception as e:
+                    logger.error(f"Failed to load cookies: {e}")
+
+        # --- STEALTH UPGRADE ---
+        # "Playwright Stealth" injects multiple scripts to hide Headless detection
+        # (WebGL, Permissions, Plugins, Languages, Console debugs, etc.)
+        try:
+            from playwright_stealth import stealth_async
+            page_temp = await self.context.new_page()
+            await stealth_async(page_temp)
+            await page_temp.close()
+            logger.info("🛡️ Stealth Mode Initiated: playwright-stealth active.")
+        except ImportError:
+            logger.warning("Stealth module not found. Running with basic masking.")
+            # Fallback handling
+            await self.context.add_init_script("""
+                Object.defineProperty(navigator, 'webdriver', {
+                    get: () => undefined
+                });
+            """)
+        except Exception as e:
+            logger.error(f"Stealth injection failed: {e}")
 
     async def stop(self):
         if self.context:
@@ -127,6 +143,13 @@ class TikTokScraper:
             await self.start()
             
         page = await self.context.new_page()
+        
+        # Apply Stealth to this page explicitly
+        try:
+             from playwright_stealth import stealth_async
+             await stealth_async(page)
+        except: pass
+
         encoded_keyword = keyword.replace(" ", "%20")
         url = f"https://www.tiktok.com/search?q={encoded_keyword}"
         
@@ -176,15 +199,80 @@ class TikTokScraper:
             print(f"Main search timeout or error: {e}")
             # Do NOT return here, let it fall through to the fallback!
             
-        elements = await page.query_selector_all('a[href*="/video/"]')
-        video_links = []
-        for el in elements:
-            href = await el.get_attribute('href')
-            if href and "/video/" in href:
-                video_links.append(href)
+        # Try to find video containers with stats for "Most Engaged" sorting
+        # Search Item Selector: [data-e2e="search_top_item"] or [data-e2e="search_item"]
+        try:
+             # Wait for at least one search item
+             await page.wait_for_selector('[data-e2e="search_card"]', state="attached", timeout=5000)
+        except: pass
+
+        # Get all cards
+        # We try broad selection then filter
+        # Common selectors for view count: .video-count, [data-e2e="video-views"]
+        cards = await page.query_selector_all('[data-e2e="search_card"]')
+        
+        candidates = []
+        
+        for card in cards:
+            try:
+                # 1. Get Link
+                link_el = await card.query_selector('a[href*="/video/"]')
+                if not link_el: continue
+                href = await link_el.get_attribute('href')
                 
+                # 2. Get View Count
+                views = 0
+                # Try multiple selectors for views
+                view_el = await card.query_selector('[data-e2e="video-views"]')
+                if not view_el: view_el = await card.query_selector('.video-count')
+                
+                if view_el:
+                    text = await view_el.inner_text() 
+                    # Parse "1.2M", "500K", "100"
+                    text = text.upper().replace("VIEWS", "").strip()
+                    if "M" in text:
+                        views = float(text.replace("M", "")) * 1_000_000
+                    elif "K" in text:
+                        views = float(text.replace("K", "")) * 1_000
+                    elif "B" in text:
+                        views = float(text.replace("B", "")) * 1_000_000_000
+                    else:
+                        try: views = float(text)
+                        except: views = 0
+                
+                candidates.append({"url": href, "views": int(views)})
+            except: continue
+        
+        # If we found rich cards, sort them!
+        if candidates:
+            logger.info(f"Found {len(candidates)} videos with stats. Sorting by engagement...")
+            # Sort DESC by views
+            candidates.sort(key=lambda x: x["views"], reverse=True)
+            video_links = [c["url"] for c in candidates]
+        else:
+            # Fallback to old simple link extraction if cards failed 
+            logger.warning("Could not parse stats. Falling back to simple link extraction.")
+            elements = await page.query_selector_all('a[href*="/video/"]')
+            video_links = []
+            for el in elements:
+                href = await el.get_attribute('href')
+                if href and "/video/" in href:
+                    video_links.append(href)
+
         # Remove duplicates
         video_links = list(set(video_links))
+        
+        # Re-Sort duplicates removal might have shuffled, but since we are taking top K, set() is risky.
+        # Actually, let's keep list order if candidates existed
+        if candidates:
+             # Re-deduplicate preserving order
+             seen = set()
+             deduped_links = []
+             for l in video_links:
+                 if l not in seen:
+                     deduped_links.append(l)
+                     seen.add(l)
+             video_links = deduped_links
         
         # --- FALLBACK: HASHTAG SEARCH ---
         if not video_links:
@@ -373,6 +461,41 @@ class TikTokScraper:
                     data['description'] = await desc_el.inner_text() if desc_el else "No description found"
             except: data['description'] = ""
 
+        # Stats (DOM Fallback)
+        # If JSON failed to find stats, scrape them from UI
+        if 'stats' not in data or data['stats'].get('likes', 0) == 0:
+            dom_stats = {'views': 0, 'likes': 0, 'shares': 0, 'comments': 0}
+            try:
+                # Likes
+                like_el = await page.query_selector('[data-e2e="like-count"]')
+                if like_el: dom_stats['likes'] = self._parse_stat(await like_el.inner_text())
+                
+                # Comments
+                comm_el = await page.query_selector('[data-e2e="comment-count"]')
+                if comm_el: dom_stats['comments'] = self._parse_stat(await comm_el.inner_text())
+                
+                # Shares 
+                share_el = await page.query_selector('[data-e2e="share-count"]')
+                if share_el: dom_stats['shares'] = self._parse_stat(await share_el.inner_text())
+                
+                if 'stats' not in data: data['stats'] = {}
+                data['stats'].update(dom_stats)
+            except Exception as e:
+                print(f"DOM stats extraction failed: {e}")
+
+    def _parse_stat(self, text):
+        """Helper to parse '1.2M', '10K', '100'"""
+        if not text: return 0
+        text = str(text) # Safety
+        text = text.upper().replace('K', '000').replace('M', '000000').replace('B', '000000000').replace('.', '')
+        try:
+            val = text.replace(',', '')
+            if 'K' in text: val = float(text.replace('K', '')) * 1000
+            elif 'M' in text: val = float(text.replace('M', '')) * 1000000
+            elif 'B' in text: val = float(text.replace('B', '')) * 1000000000
+            return int(float(val))
+        except: return 0
+
         # Thumbnail
         if not data.get('thumbnail'):
             try:
@@ -390,24 +513,8 @@ class TikTokScraper:
                 data['author'] = await author_el.inner_text() if author_el else "Unknown Author"
             except: data['author'] = ""
 
-        # Stats (DOM Fallback)
-        if 'stats' not in data:
-            data['stats'] = {}
-            try:
-                likes_el = await page.query_selector('[data-e2e="like-count"]')
-                data['stats']['likes'] = await likes_el.inner_text() if likes_el else "N/A"
-                
-                comments_el = await page.query_selector('[data-e2e="comment-count"]')
-                data['stats']['comments'] = await comments_el.inner_text() if comments_el else "N/A"
-                
-                # Views often not shown on video page detail, only on feed.
-                data['stats']['views'] = "N/A" 
-            except: pass
-
-        # Hashtags (DOM Fallback)
         if 'hashtags' not in data:
             try:
-                # Hashtags are usually links in the description
                 tag_els = await page.query_selector_all('a[href*="/tag/"]')
                 data['hashtags'] = [await t.inner_text() for t in tag_els]
             except: data['hashtags'] = []
@@ -417,44 +524,99 @@ class TikTokScraper:
         await asyncio.sleep(3)
         
         comments = []
-        comment_elements = await page.query_selector_all('[data-e2e="comment-level-1"]')
-        if not comment_elements:
-             comment_elements = await page.query_selector_all('div[class*="DivCommentContentContainer"]')
-
-        for el in comment_elements[:20]: 
-            text_el = await el.query_selector('p[data-e2e="comment-level-1__content"]')
-            if not text_el: text_el = await el.query_selector('p')
-            if text_el:
-                text = await text_el.inner_text()
-                if "trouble playing" not in text:
-                    comments.append(text)
+        try:
+            comment_elements = await page.query_selector_all('[data-e2e="comment-level-1"]')
+            if not comment_elements:
+                 comment_elements = await page.query_selector_all('div[class*="DivCommentContentContainer"]')
+    
+            for el in comment_elements[:20]: 
+                text_el = await el.query_selector('p[data-e2e="comment-level-1__content"]')
+                if not text_el: text_el = await el.query_selector('p')
+                if text_el:
+                    text = await text_el.inner_text()
+                    if "trouble playing" not in text:
+                        comments.append(text)
+        except: pass
         
-        if not comments:
-             ps = await page.query_selector_all('p')
-             for p in ps[:20]:
-                 text = await p.inner_text()
-                 if len(text) > 5 and len(text) < 200 and "trouble playing" not in text:
-                     comments.append(text)
-
         data['comments'] = comments
 
         await page.close()
         return data
 
+async def _save_video_to_db(db_client, video_record, comments):
+    """Helper to save video and comments to DB"""
+    try:
+        tiktok_id = video_record["tiktok_id"]
+        existing = db_client.get_video_by_tiktok_id(tiktok_id)
+        if existing:
+            success = db_client.update_video(video_record)
+            return existing["id"] if success else None
+        else:
+            video_id = db_client.insert_video(video_record)
+            if video_id and comments:
+                 comment_records = [{"author_username": "Unknown", "comment_text": c, "likes_count": 0} for c in comments]
+                 db_client.insert_comments(video_id, comment_records)
+            return video_id
+    except Exception as e:
+        logger.error(f"DB Save Error: {e}")
+        return None
+
+async def scrape_direct_urls(urls: List[str], db_client: SupabaseClient, scraper: TikTokScraper = None, headless: bool = True) -> Dict[str, Any]:
+    """Scrape specific video URLs directly"""
+    close_scraper = False
+    if not scraper:
+        scraper = TikTokScraper(headless=headless)
+        await scraper.start()
+        close_scraper = True
+
+    scraped_count = 0
+    video_ids = []
+    
+    try:
+        for url in urls:
+            logger.info(f"Direct Scraping: {url}")
+            tiktok_id = extract_tiktok_id(url)
+            if not tiktok_id:
+                logger.warning(f"Invalid TikTok URL: {url}")
+                continue
+                
+            video_data = await scraper.scrape_video_details(url)
+            if video_data:
+                # Prepare record
+                video_record = {
+                    "tiktok_id": tiktok_id,
+                    "url": url,
+                    "author_username": video_data.get("author", "Unknown"),
+                    "description": video_data.get("description", ""),
+                    "views_count": int(video_data.get("stats", {}).get("views", 0)),
+                    "likes_count": int(video_data.get("stats", {}).get("likes", 0)),
+                    "shares_count": int(video_data.get("stats", {}).get("shares", 0)),
+                    "comments_count": int(video_data.get("stats", {}).get("comments", 0)),
+                    "hashtags": video_data.get("hashtags", []),
+                    "screenshot_base64": video_data.get("screenshot_base64"),
+                    "search_keyword": "Direct Link" # Special keyword
+                }
+                
+                vid_id = await _save_video_to_db(db_client, video_record, video_data.get("comments", []))
+                if vid_id:
+                    scraped_count += 1
+                    video_ids.append(vid_id)
+                    logger.info(f"✅ Saved: {tiktok_id}")
+            
+    finally:
+        if close_scraper:
+            await scraper.stop()
+            
+    return {
+        "keyword": "Direct Link",
+        "found": len(urls),
+        "scraped": scraped_count,
+        "skipped": len(urls) - scraped_count,
+        "video_ids": video_ids
+    }
 
 async def scrape_and_save(keyword: str, max_videos: int, db_client: SupabaseClient, scraper: TikTokScraper = None, headless: bool = True) -> Dict[str, Any]:
-    """
-    Scrape videos by keyword and save to database
-
-    Args:
-        keyword: Search keyword
-        max_videos: Maximum number of videos to scrape
-        db_client: Database client instance
-        scraper: Optional existing scraper instance
-
-    Returns:
-        Dictionary with scraping results
-    """
+    """Scrape videos by keyword and save to database"""
     close_scraper = False
     if not scraper:
         scraper = TikTokScraper(headless=headless)
@@ -466,56 +628,29 @@ async def scrape_and_save(keyword: str, max_videos: int, db_client: SupabaseClie
 
         # Search for videos
         video_urls = await scraper.search_videos(keyword, limit=max_videos)
-
-        if not video_urls:
-            logger.warning(f"No videos found for keyword: {keyword}")
-            return {
-                "keyword": keyword,
-                "found": 0,
-                "scraped": 0,
-                "skipped": 0,
-                "video_ids": []
-            }
-
-        scraped_count = 0
-        skipped_count = 0
-        video_ids = []
-
-        scraped_count = 0
-        skipped_count = 0
-        video_ids = []
-
+        
         # Parallel Processing with Semaphore (Max 3 concurrent tabs to save memory)
         sem = asyncio.Semaphore(3)
 
         async def process_video(url):
             async with sem:
                 tiktok_id = extract_tiktok_id(url)
-                if not tiktok_id:
-                    return None
+                if not tiktok_id: return None
 
                 logger.info(f"Scraping video {tiktok_id}...")
                 video_data = await scraper.scrape_video_details(url)
-                
-                if not video_data:
-                    return None
+                if not video_data: return None
 
-                # Log details
-                v_auth = video_data.get("author", "Unknown")
-                v_desc = video_data.get("description", "")[:50].replace("\n", " ") + "..."
-                v_stats = video_data.get("stats", {})
-                logger.info(f"   -> Found: @{v_auth} | {v_desc}")
-                
                 # Prepare record
                 video_record = {
                     "tiktok_id": tiktok_id,
                     "url": url,
                     "author_username": video_data.get("author", "Unknown"),
                     "description": video_data.get("description", ""),
-                    "views_count": int(video_data.get("stats", {}).get("views", 0)) if isinstance(video_data.get("stats", {}).get("views"), int) else 0,
-                    "likes_count": int(video_data.get("stats", {}).get("likes", 0)) if isinstance(video_data.get("stats", {}).get("likes"), int) else 0,
-                    "shares_count": int(video_data.get("stats", {}).get("shares", 0)) if isinstance(video_data.get("stats", {}).get("shares"), int) else 0,
-                    "comments_count": int(video_data.get("stats", {}).get("comments", 0)) if isinstance(video_data.get("stats", {}).get("comments"), int) else 0,
+                     "views_count": int(video_data.get("stats", {}).get("views", 0)),
+                    "likes_count": int(video_data.get("stats", {}).get("likes", 0)),
+                    "shares_count": int(video_data.get("stats", {}).get("shares", 0)),
+                    "comments_count": int(video_data.get("stats", {}).get("comments", 0)),
                     "hashtags": video_data.get("hashtags", []),
                     "screenshot_base64": video_data.get("screenshot_base64"),
                     "search_keyword": keyword
@@ -527,37 +662,23 @@ async def scrape_and_save(keyword: str, max_videos: int, db_client: SupabaseClie
         tasks = [process_video(url) for url in video_urls]
         results = await asyncio.gather(*tasks)
         
-        # Save to DB (Sequentially to avoid locks)
+        scraped_count = 0
+        video_ids = []
+        
+        # Save to DB
         for res in results:
             if not res: continue
-            
             video_record, comments = res
-            tiktok_id = video_record["tiktok_id"]
-            
-            # DB Operations
-            existing = db_client.get_video_by_tiktok_id(tiktok_id)
-            if existing:
-                success = db_client.update_video(video_record)
-                if success:
-                    scraped_count += 1
-                    video_ids.append(existing["id"])
-            else:
-                video_id = db_client.insert_video(video_record)
-                if video_id:
-                    scraped_count += 1
-                    video_ids.append(video_id)
-                    # Insert comments
-                    if comments:
-                         comment_records = [{"author_username": "Unknown", "comment_text": c, "likes_count": 0} for c in comments]
-                         db_client.insert_comments(video_id, comment_records)
-                else:
-                    logger.error(f"Failed to save video {tiktok_id} to database")
+            vid_id = await _save_video_to_db(db_client, video_record, comments)
+            if vid_id:
+                scraped_count += 1
+                video_ids.append(vid_id)
 
         return {
             "keyword": keyword,
             "found": len(video_urls),
             "scraped": scraped_count,
-            "skipped": skipped_count,
+            "skipped": len(video_urls) - scraped_count,
             "video_ids": video_ids
         }
 
