@@ -237,7 +237,7 @@ class SupabaseClient:
                         if isinstance(sentiment_data, dict):
                             video['sentiment'] = sentiment_data.get('sentiment')
                             video['sentiment_score'] = sentiment_data.get('sentiment_score')
-                            video['summary'] = sentiment_data.get('discussion_points')  # Use discussion_points
+                            video['summary'] = sentiment_data.get('summary') or sentiment_data.get('discussion_points')
                             video['topic'] = sentiment_data.get('topic')
                             video['key_issues'] = sentiment_data.get('key_issues', [])
                             video['trend_context'] = sentiment_data.get('trend_context', "N/A")

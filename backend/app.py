@@ -989,12 +989,19 @@ else:
             desc = v.get('description', '')[:120] + "..." if len(v.get('description', '')) > 120 else v.get('description', '')
             summary = v.get('summary', "No AI summary available.")
             pk_issue = v.get('key_issues', [])
-            issue_tag = pk_issue[0] if pk_issue and isinstance(pk_issue, list) and len(pk_issue) > 0 else "General Content"
+            
+            # Prepare Insight Tags
+            insight_html = ""
+            if pk_issue and isinstance(pk_issue, list):
+                for issue in pk_issue[:3]: # Show top 3
+                     insight_html += f'<span style="background:#FFF3E0; color:#E67E22; padding:3px 8px; border-radius:4px; font-size:10px; font-weight:600; margin-right:4px;">{issue}</span>'
+            else:
+                insight_html = '<span style="background:#f0f0f0; color:#999; padding:3px 8px; border-radius:4px; font-size:10px;">General</span>'
             
             tiktok_url = f"https://www.tiktok.com/@{v.get('author_username', 'user')}/video/{v.get('tiktok_id', '')}"
             
             grid_html = f"""
-            <div style="background:white; border:1px solid #EEE; border-radius:12px; padding:20px; margin-bottom:20px; box-shadow:0 2px 5px rgba(0,0,0,0.02); height:450px; display:flex; flex-direction:column;">
+            <div style="background:white; border:1px solid #EEE; border-radius:12px; padding:20px; margin-bottom:20px; box-shadow:0 2px 5px rgba(0,0,0,0.02); height:500px; display:flex; flex-direction:column;">
                 <div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:15px;">
                     <div style="font-weight:700; font-size:14px; color:#333;">
                          <a href="{tiktok_url}" target="_blank" style="text-decoration:none; color:#333; display:flex; align-items:center; gap:6px;">
@@ -1009,15 +1016,17 @@ else:
                     {desc}
                 </div>
                 
-                <div style="background:#Fcfcfc; border:1px solid #F0F0F0; padding:10px; border-radius:8px; margin-bottom:10px; flex-grow:1;">
-                    <div style="font-size:10px; font-weight:700; color:#999; margin-bottom:4px;">AI SUMMARY:</div>
-                    <div style="font-size:11px; color:#444; line-height:1.4;">{summary[:150]}...</div>
+                <div style="background:#Fcfcfc; border:1px solid #F0F0F0; padding:10px; border-radius:8px; margin-bottom:10px; flex-grow:1; overflow-y:auto;">
+                    <div style="font-size:10px; font-weight:700; color:#999; margin-bottom:4px;">VIDEO SUMMARY & INSIGHTS:</div>
+                    <div style="font-size:11px; color:#444; line-height:1.4;">{summary[:500]}</div>
                     <div style="font-size:9px; color:#AAA; margin-top:5px; font-style:italic;">Source Report: {v.get('search_keyword', 'N/A')}</div>
                 </div>
                 
                 <div style="margin-bottom:15px;">
-                     <div style="font-size:10px; font-weight:700; color:#999; margin-bottom:4px;">KEY ISSUES:</div>
-                     <span style="background:#FFF3E0; color:#E67E22; padding:3px 8px; border-radius:4px; font-size:11px; font-weight:600;">{issue_tag}</span>
+                     <div style="font-size:10px; font-weight:700; color:#999; margin-bottom:4px;">MAIN TOPICS:</div>
+                     <div style="display:flex; flex-wrap:wrap; gap:4px;">
+                        {insight_html}
+                     </div>
                 </div>
                 
                 <div style="border-top:1px solid #F5F5F5; padding-top:12px; display:flex; justify-content:space-between; color:#AAA; font-size:12px;">

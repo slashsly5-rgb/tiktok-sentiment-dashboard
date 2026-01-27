@@ -51,8 +51,9 @@ class Analyzer:
         
         Return a JSON object with exactly these fields:
         {{
-            "topic": "Short summary of the video topic",
-            "key_issues": ["Specific Issue 1", "Specific Issue 2"],
+            "topic": "The main subject or title of the video (Max 5 words)",
+            "summary": "A detailed 2-3 sentence summary of the video content and main message.",
+            "key_issues": ["Main Key Insight 1", "Main Key Insight 2", "Critical Observation"],
             "trend_context": "Explanation of why this is trending. Use stats to justify 'High' viral potential.",
             "viral_potential": "High, Medium, or Low",
             "discussion_points": ["Point 1", "Point 2", "Point 3"],
@@ -100,6 +101,7 @@ class Analyzer:
             
             return {
                 "topic": data.get("topic", "N/A"),
+                "summary": data.get("summary", "No summary available."), # Added Summary Field
                 "discussion": "; ".join(data.get("discussion_points", [])), # String for DB 'discussion' text
                 "key_issues": issues, # List for UI
                 "trend_context": data.get("trend_context", "No trend context available."),
