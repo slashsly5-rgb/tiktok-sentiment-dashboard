@@ -592,7 +592,46 @@ class TikTokScraper:
         except: pass
         
         data['comments'] = comments
+
         
+        # --- ULTIMATE FALLBACK: Parse Metadata from Description ---
+        # If DOM failed, the description often has: "1.9M Likes, 12.7K Comments. TikTok video from User..."
+        if data.get('description'):
+            desc = data['description']
+            import re
+            
+            # 1. Parse Stats (if 0)
+            if data['stats']['likes'] == 0:
+                match = re.search(r'([\d\.]+[KMB]?)\s*Likes', desc)
+                if match: data['stats']['likes'] = self._parse_stat(match.group(1))
+            
+            if data['stats']['comments'] == 0:
+                match = re.search(r'([\d\.]+[KMB]?)\s*Comments', desc)
+                if match: data['stats']['comments'] = self._parse_stat(match.group(1))
+                
+            if data['stats']['views'] == 0:
+                # views often not in textual desc, but sometimes "X Views"
+                match = re.search(r'([\d\.]+[KMB]?)\s*Views', desc)
+                if match: data['stats']['views'] = self._parse_stat(match.group(1))
+
+            # 2. Parse Author (if Unknown)
+            if data.get('author') == "Unknown Author":
+                # "TikTok video from Name (@handle)"
+                match_handle = re.search(r'from\s+(.*?)\s+\(@(.*?)\)', desc)
+                if match_handle:
+                    data['author'] = match_handle.group(2) # Prefer Handle
+                else:
+                    # Try just "from Name"
+                    match_from = re.search(r'from\s+(.*?)\s*(?::|\()', desc)
+                    if match_from: data['author'] = match_from.group(1)
+
+        # Final Cleanup of Hashtags (Unicode support)
+        if not data.get('hashtags') and data.get('description'):
+            try:
+                # Capture #anything_until_space
+                data['hashtags'] = re.findall(r"#([^\s\.,!?:;\"'()]+)", data['description'])
+            except: pass
+
         # Final Debug Log
         print(f"Scraped Data: {data.get('stats')} | Comments: {len(comments)}")
 
