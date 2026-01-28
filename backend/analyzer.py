@@ -52,7 +52,7 @@ class Analyzer:
         Return a JSON object with exactly these fields:
         {{
             "topic": "The main subject or title of the video (Max 5 words)",
-            "summary": "A detailed 2-3 sentence summary of the video content and main message.",
+            "summary": "A synthesised summary of the PUBLIC REACTION and COMMENTS. Focus on what people are saying, debating, or feeling. Briefly mention the video context only if needed.",
             "key_issues": ["Main Key Insight 1", "Main Key Insight 2", "Critical Observation"],
             "trend_context": "Explanation of why this is trending. Use stats to justify 'High' viral potential.",
             "viral_potential": "High, Medium, or Low",
