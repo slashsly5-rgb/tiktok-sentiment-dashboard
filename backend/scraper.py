@@ -567,41 +567,42 @@ class TikTokScraper:
         for k in ['views', 'likes', 'comments', 'shares']:
             if k not in data['stats']: data['stats'][k] = 0
 
+        # Decoupled Stats Extraction (Fail Softly)
+        # Likes
         try:
-             # Likes
             like_el = await page.query_selector('[data-e2e="like-count"]')
             if like_el: data['stats']['likes'] = self._parse_stat(await like_el.inner_text())
+        except: pass
 
-            # Comments Count (Try multiple selectors)
+        # Comments
+        try:
             comm_selectors = ['[data-e2e="comment-count"]', 'strong[data-e2e="comment-count"]']
             for sel in comm_selectors:
                 comm_el = await page.query_selector(sel)
                 if comm_el:
                     data['stats']['comments'] = self._parse_stat(await comm_el.inner_text())
                     break
+        except: pass
 
-            # Shares Count
+        # Shares
+        try:
             share_selectors = ['[data-e2e="share-count"]', 'strong[data-e2e="share-count"]']
             for sel in share_selectors:
                 share_el = await page.query_selector(sel)
                 if share_el:
                     data['stats']['shares'] = self._parse_stat(await share_el.inner_text())
                     break
-            
-            # --- NEW: Explicit Views Extraction ---
-            # TikTok often labels views differently on detail pages
+        except: pass
+        
+        # Views
+        try:
             view_selectors = ['[data-e2e="video-views"]', 'strong[data-e2e="video-views"]']
             for sel in view_selectors:
                 view_el = await page.query_selector(sel)
                 if view_el: 
                     data['stats']['views'] = self._parse_stat(await view_el.inner_text())
                     break
-            
-            # Fallback: If views still 0, assume Likes > Views is impossible, so use Likes as min floor? 
-            # No, that's bad data. But we can retry parsing from description if present.
-            
-        except Exception as e:
-            print(f"Stats extraction warning: {e}")
+        except: pass
 
         # Comments Text (Scroll and scrape)
         # Scroll down multiple times to trigger loading
@@ -675,19 +676,19 @@ class TikTokScraper:
                     likes_match = re.search(r'([\d\.]+([KMB])?)\s+Likes', desc_text, flags)
                     if likes_match: data['stats']['likes'] = self._parse_stat(likes_match.group(1))
 
-                # Comments
+                # Comments - Handle singular/plural
                 if data['stats']['comments'] == 0:
-                    comm_match = re.search(r'([\d\.]+([KMB])?)\s+Comments', desc_text, flags)
+                    comm_match = re.search(r'([\d\.]+([KMB])?)\s+Comment', desc_text, flags)
                     if comm_match: data['stats']['comments'] = self._parse_stat(comm_match.group(1))
                     
                 # Views (sometimes "1.2M Views")
                 if data['stats']['views'] == 0:
-                     views_match = re.search(r'([\d\.]+([KMB])?)\s+Views', desc_text, flags)
+                     views_match = re.search(r'([\d\.]+([KMB])?)\s+View', desc_text, flags)
                      if views_match: data['stats']['views'] = self._parse_stat(views_match.group(1))
                      
                 # Shares (Rarely in meta, but checking)
                 if data['stats']['shares'] == 0:
-                     shares_match = re.search(r'([\d\.]+([KMB])?)\s+Shares', desc_text, flags)
+                     shares_match = re.search(r'([\d\.]+([KMB])?)\s+Share', desc_text, flags)
                      if shares_match: data['stats']['shares'] = self._parse_stat(shares_match.group(1))
 
         except Exception as e:
@@ -739,14 +740,20 @@ class TikTokScraper:
     def _parse_stat(self, text):
         """Helper to parse '1.2M', '10K', '100'"""
         if not text: return 0
-        text = str(text) 
-        text = text.upper().replace('K', '000').replace('M', '000000').replace('B', '000000000').replace('.', '')
+        text = str(text).upper().replace(',', '').strip()
         try:
-            val = text.replace(',', '')
-            if 'K' in text: val = float(text.replace('K', '')) * 1000
-            elif 'M' in text: val = float(text.replace('M', '')) * 1000000
-            elif 'B' in text: val = float(text.replace('B', '')) * 1000000000
-            return int(float(val))
+            multiplier = 1
+            if 'K' in text:
+                multiplier = 1000
+                text = text.replace('K', '')
+            elif 'M' in text:
+                multiplier = 1000000
+                text = text.replace('M', '')
+            elif 'B' in text:
+                multiplier = 1000000000
+                text = text.replace('B', '')
+                
+            return int(float(text) * multiplier)
         except: return 0
 
 async def _save_video_to_db(db_client, video_record, comments):
