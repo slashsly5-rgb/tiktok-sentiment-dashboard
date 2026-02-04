@@ -177,6 +177,28 @@ class MistralChatService:
                 context_parts.append(f"### Average Sentiment Score: {avg_score:.2f}/10")
                 context_parts.append("")
 
+            # --- NEW: RAW COMMENTS CONTEXT ---
+            context_parts.append("### Trending Public Comments (Raw Data):")
+            try:
+                # Optimized: Get top 20 comments sorted by likes from these videos
+                comment_query = self.db.supabase.table("comments") \
+                    .select("comment_text, likes_count, author_username") \
+                    .in_("video_id", video_ids) \
+                    .order("likes_count", desc=True) \
+                    .limit(25) # Limit to avoid token overflow
+                
+                raw_comments = comment_query.execute().data
+                
+                if raw_comments:
+                    for c in raw_comments:
+                        context_parts.append(f"- \"{c['comment_text']}\" (Likes: {c['likes_count']})")
+                else:
+                    context_parts.append("No specific text comments found in database.")
+            except Exception as e:
+                logger.error(f"Failed to fetch comments for context: {e}")
+            
+            context_parts.append("")
+
             return "\n".join(context_parts)
 
         except Exception as e:
@@ -241,6 +263,7 @@ class MistralChatService:
 
 You have access to aggregated sentiment analysis data from TikTok videos, including:
 - AI-generated summaries of video content and comments
+- Specific raw user comments and their engagement levels
 - Key political issues mentioned
 - Discussion topics and trends
 - Sentiment scores and distributions
