@@ -82,8 +82,8 @@ class MistralChatService:
             # Get videos for the time period
             cutoff_date = (datetime.now() - timedelta(days=days)).isoformat()
 
-            # Query videos
-            query = self.db.supabase.table("videos").select("id, description, search_keyword").gte("scraped_at", cutoff_date)
+            # Query videos with stats
+            query = self.db.supabase.table("videos").select("id, description, search_keyword, views_count, comments_count").gte("scraped_at", cutoff_date)
 
             # Apply keyword filter if provided
             if keywords:
@@ -100,6 +100,10 @@ class MistralChatService:
                 return f"No videos found in the last {days} days matching the filters."
 
             video_ids = [v["id"] for v in videos]
+            
+            # Calculates Aggregates
+            total_views = sum(v.get("views_count", 0) for v in videos)
+            total_comments = sum(v.get("comments_count", 0) for v in videos)
 
             # Get sentiment analyses for these videos
             sentiment_query = self.db.supabase.table("sentiment_analysis").select(
@@ -119,7 +123,8 @@ class MistralChatService:
             context_parts = [
                 f"# TikTok Sentiment Analysis Context",
                 f"Period: Last {days} days",
-                f"Total videos analyzed: {len(sentiments)}",
+                f"Dataset: {len(videos)} videos analyzed",
+                f"Total Traffic: {total_views:,} Views | {total_comments:,} Comments",
                 f"",
                 f"## Aggregated Insights:",
                 f""
