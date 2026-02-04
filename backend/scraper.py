@@ -611,33 +611,46 @@ class TikTokScraper:
         
         comments = []
         try:
-            # Broad selectors for comments
-            selectors = [
+            # Broad selectors for comment CONTAINERS
+            container_selectors = [
                  '[data-e2e="comment-level-1"]', 
+                 '[data-e2e="comment-item"]',
                  'div[class*="DivCommentContentContainer"]',
                  'div[class*="CommentItem"]',
                  '.css-1i7ohvi-DivCommentItemContainer'
             ]
             
             comment_elements = []
-            for sel in selectors:
+            for sel in container_selectors:
                 els = await page.query_selector_all(sel)
                 if els:
                     comment_elements = els
                     break
 
-            for el in comment_elements[:20]: 
-                # Try getting text from P or div
-                text_el = await el.query_selector('p[data-e2e="comment-level-1__content"]')
-                if not text_el: text_el = await el.query_selector('p')
-                if not text_el: text_el = await el.query_selector('span')
-                
-                if text_el:
-                    text = await text_el.inner_text()
-                    # Filter junk
-                    if len(text) > 2 and "trouble playing" not in text and "Reply" not in text:
+            if comment_elements:
+                # Strategy A: Extract from containers
+                for el in comment_elements[:25]: 
+                    # Try getting text from P or div specific to content
+                    text_el = await el.query_selector('p[data-e2e="comment-level-1__content"]')
+                    if not text_el: text_el = await el.query_selector('[data-e2e="comment-level-1__content"]')
+                    if not text_el: text_el = await el.query_selector('p')
+                    if not text_el: text_el = await el.query_selector('span')
+                    
+                    if text_el:
+                        text = await text_el.inner_text()
+                        if len(text) > 1 and "Reply" not in text:
+                            comments.append(text)
+            else:
+                # Strategy B: Direct Text Element Search (Fallback)
+                # If containers fail, just grab the text paragraphs directly
+                text_els = await page.query_selector_all('[data-e2e="comment-level-1__content"]')
+                for el in text_els[:25]:
+                    text = await el.inner_text()
+                    if len(text) > 1:
                         comments.append(text)
-        except: pass
+
+        except Exception as e:
+            print(f"Comment extraction error: {e}")
         
         data['comments'] = comments
 
