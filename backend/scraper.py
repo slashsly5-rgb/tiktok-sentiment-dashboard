@@ -572,8 +572,8 @@ class TikTokScraper:
             try:
                 el = await page.query_selector(selector)
                 if not el: return None
-                # Poll for text
-                for _ in range(5):
+                # Poll for text (up to 6s)
+                for _ in range(12):
                     txt = await el.inner_text()
                     if txt and txt.strip():
                         # print(f"DEBUG: Found {name}: {txt}")
