@@ -572,14 +572,36 @@ class TikTokScraper:
             like_el = await page.query_selector('[data-e2e="like-count"]')
             if like_el: data['stats']['likes'] = self._parse_stat(await like_el.inner_text())
 
-            # Comments Count
-            comm_el = await page.query_selector('[data-e2e="comment-count"]')
-            if comm_el: data['stats']['comments'] = self._parse_stat(await comm_el.inner_text())
+            # Comments Count (Try multiple selectors)
+            comm_selectors = ['[data-e2e="comment-count"]', 'strong[data-e2e="comment-count"]']
+            for sel in comm_selectors:
+                comm_el = await page.query_selector(sel)
+                if comm_el:
+                    data['stats']['comments'] = self._parse_stat(await comm_el.inner_text())
+                    break
 
             # Shares Count
-            share_el = await page.query_selector('[data-e2e="share-count"]')
-            if share_el: data['stats']['shares'] = self._parse_stat(await share_el.inner_text())
-        except: pass
+            share_selectors = ['[data-e2e="share-count"]', 'strong[data-e2e="share-count"]']
+            for sel in share_selectors:
+                share_el = await page.query_selector(sel)
+                if share_el:
+                    data['stats']['shares'] = self._parse_stat(await share_el.inner_text())
+                    break
+            
+            # --- NEW: Explicit Views Extraction ---
+            # TikTok often labels views differently on detail pages
+            view_selectors = ['[data-e2e="video-views"]', 'strong[data-e2e="video-views"]']
+            for sel in view_selectors:
+                view_el = await page.query_selector(sel)
+                if view_el: 
+                    data['stats']['views'] = self._parse_stat(await view_el.inner_text())
+                    break
+            
+            # Fallback: If views still 0, assume Likes > Views is impossible, so use Likes as min floor? 
+            # No, that's bad data. But we can retry parsing from description if present.
+            
+        except Exception as e:
+            print(f"Stats extraction warning: {e}")
 
         # Comments Text (Scroll and scrape)
         # Scroll down multiple times to trigger loading
