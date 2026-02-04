@@ -570,16 +570,20 @@ class TikTokScraper:
         # Decoupled Stats Extraction with Explicit Waits
         async def get_text_safe(selector, name):
             try:
-                el = await page.query_selector(selector)
-                if not el: return None
+                # Use Locator to handle detachment/re-rendering automatically
+                loc = page.locator(selector).first
+                if await loc.count() == 0: return None
+                
                 # Poll for text (up to 6s)
                 for _ in range(12):
-                    txt = await el.inner_text()
-                    if txt and txt.strip():
-                        # print(f"DEBUG: Found {name}: {txt}")
-                        return txt
+                    try:
+                        txt = await loc.inner_text(timeout=1000)
+                        if txt and txt.strip():
+                            # print(f"DEBUG: Found {name}: {txt}")
+                            return txt
+                    except: pass 
                     await asyncio.sleep(0.5)
-                return await el.inner_text()
+                return await loc.inner_text()
             except: return None
 
         # Likes
