@@ -567,20 +567,34 @@ class TikTokScraper:
         for k in ['views', 'likes', 'comments', 'shares']:
             if k not in data['stats']: data['stats'][k] = 0
 
-        # Decoupled Stats Extraction (Fail Softly)
+        # Decoupled Stats Extraction with Explicit Waits
+        async def get_text_safe(selector, name):
+            try:
+                el = await page.query_selector(selector)
+                if not el: return None
+                # Poll for text
+                for _ in range(5):
+                    txt = await el.inner_text()
+                    if txt and txt.strip():
+                        # print(f"DEBUG: Found {name}: {txt}")
+                        return txt
+                    await asyncio.sleep(0.5)
+                return await el.inner_text()
+            except: return None
+
         # Likes
         try:
-            like_el = await page.query_selector('[data-e2e="like-count"]')
-            if like_el: data['stats']['likes'] = self._parse_stat(await like_el.inner_text())
+            txt = await get_text_safe('[data-e2e="like-count"]', "Likes")
+            if txt: data['stats']['likes'] = self._parse_stat(txt)
         except: pass
 
         # Comments
         try:
             comm_selectors = ['[data-e2e="comment-count"]', 'strong[data-e2e="comment-count"]']
             for sel in comm_selectors:
-                comm_el = await page.query_selector(sel)
-                if comm_el:
-                    data['stats']['comments'] = self._parse_stat(await comm_el.inner_text())
+                txt = await get_text_safe(sel, "Comments")
+                if txt:
+                    data['stats']['comments'] = self._parse_stat(txt)
                     break
         except: pass
 
@@ -588,9 +602,9 @@ class TikTokScraper:
         try:
             share_selectors = ['[data-e2e="share-count"]', 'strong[data-e2e="share-count"]']
             for sel in share_selectors:
-                share_el = await page.query_selector(sel)
-                if share_el:
-                    data['stats']['shares'] = self._parse_stat(await share_el.inner_text())
+                txt = await get_text_safe(sel, "Shares")
+                if txt:
+                    data['stats']['shares'] = self._parse_stat(txt)
                     break
         except: pass
         
@@ -598,9 +612,9 @@ class TikTokScraper:
         try:
             view_selectors = ['[data-e2e="video-views"]', 'strong[data-e2e="video-views"]']
             for sel in view_selectors:
-                view_el = await page.query_selector(sel)
-                if view_el: 
-                    data['stats']['views'] = self._parse_stat(await view_el.inner_text())
+                txt = await get_text_safe(sel, "Views")
+                if txt:
+                    data['stats']['views'] = self._parse_stat(txt)
                     break
         except: pass
 
