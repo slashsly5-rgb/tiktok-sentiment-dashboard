@@ -707,21 +707,18 @@ class TikTokScraper:
              except: pass
 
             
-            # Fallback for Author parsing using Description
-            if data.get('author') == "Unknown Author" and desc_text:
-                try:
-                    # "TikTok video from Name (@handle)"
-                    match_handle = re.search(r'from\s+(.*?)\s+\(@(.*?)\)', desc_text)
-                    if match_handle:
-                        data['author'] = match_handle.group(2) # Prefer Handle
-                    else:
-                        # Try just "from Name"
-                        match_from = re.search(r'from\s+(.*?)\s*(?::|\()', desc_text)
-                        if match_from: data['author'] = match_from.group(1)
-                except: pass
+        # Fallback for Author parsing using Description
+        if data.get('author') == "Unknown Author" and desc_text:
+            try:
+                # "TikTok video from Name (@handle)"
+                match_handle = re.search(r'from\s+(.*?)\s+\(@(.*?)\)', desc_text)
+                if match_handle:
+                    data['author'] = match_handle.group(2) # Prefer Handle
+                else:
                     # Try just "from Name"
-                    match_from = re.search(r'from\s+(.*?)\s*(?::|\()', desc)
+                    match_from = re.search(r'from\s+(.*?)\s*(?::|\()', desc_text)
                     if match_from: data['author'] = match_from.group(1)
+            except: pass
 
         # Final Cleanup of Hashtags (Unicode support)
         if not data.get('hashtags') and data.get('description'):
