@@ -52,13 +52,13 @@ class Analyzer:
         Return a JSON object with exactly these fields:
         {{
             "topic": "The main subject or title of the video (Max 5 words)",
-            "summary": "A synthesised summary of the PUBLIC REACTION and COMMENTS. Focus on what people are saying, debating, or feeling. Briefly mention the video context only if needed.",
+            "summary": "Strictly summarize the USER COMMENTS and PUBLIC OPINION. Do NOT summarize the video description. What are users saying? usage of slang/hashtags in comments? Quote specific sentiments.",
             "key_issues": ["Main Key Insight 1", "Main Key Insight 2", "Critical Observation"],
             "trend_context": "Explanation of why this is trending. Use stats to justify 'High' viral potential.",
             "viral_potential": "High, Medium, or Low",
             "discussion_points": ["Point 1", "Point 2", "Point 3"],
             "sentiment": "Positive, Negative, Neutral, or Mixed",
-            "score": 1-10 (integer)
+            "sentiment_score": 5  // Integer between 1 (Very Negative) and 10 (Very Positive)
         }}
 
         CRITICAL SENTIMENT RULES:

@@ -667,43 +667,46 @@ class TikTokScraper:
             
             if desc_text:
                 import re
-                # Pattern: "1.2M Likes, 30K Comments" or "100K Views"
-                # Note: Views are rarely in description, but Likes/Comments often are.
+                # Pattern: "1.2M Likes, 30K Comments" - Ensure Case Insensitivity
+                flags = re.IGNORECASE
                 
                 # Likes
                 if data['stats']['likes'] == 0:
-                    likes_match = re.search(r'([\d\.]+([KMB])?)\s+Likes', desc_text)
+                    likes_match = re.search(r'([\d\.]+([KMB])?)\s+Likes', desc_text, flags)
                     if likes_match: data['stats']['likes'] = self._parse_stat(likes_match.group(1))
 
                 # Comments
                 if data['stats']['comments'] == 0:
-                    comm_match = re.search(r'([\d\.]+([KMB])?)\s+Comments', desc_text)
+                    comm_match = re.search(r'([\d\.]+([KMB])?)\s+Comments', desc_text, flags)
                     if comm_match: data['stats']['comments'] = self._parse_stat(comm_match.group(1))
                     
                 # Views (sometimes "1.2M Views")
                 if data['stats']['views'] == 0:
-                     views_match = re.search(r'([\d\.]+([KMB])?)\s+Views', desc_text)
+                     views_match = re.search(r'([\d\.]+([KMB])?)\s+Views', desc_text, flags)
                      if views_match: data['stats']['views'] = self._parse_stat(views_match.group(1))
+                     
+                # Shares (Rarely in meta, but checking)
+                if data['stats']['shares'] == 0:
+                     shares_match = re.search(r'([\d\.]+([KMB])?)\s+Shares', desc_text, flags)
+                     if shares_match: data['stats']['shares'] = self._parse_stat(shares_match.group(1))
 
         except Exception as e:
             print(f"Meta stats fallback failed: {e}")
 
         # --- STRATEGY C: Scorched Earth Comment Text ---
-        # If we still have 0 comments text, but we know there SHOULD be comments (from stats), grab paragraphs.
-        if not data['comments'] and data['stats']['comments'] > 0:
+        # If we still have 0 comments text, but we know there SHOULD be comments, grab paragraphs.
+        # We also loosen the check: if stats says 0 (because we failed to parse) but we see comment-like text, grab it.
+        if not data['comments']:
              try:
                  all_ps = await page.query_selector_all('p')
                  candidates = []
-                 for p in all_ps[:60]: # Check first 60 paragraphs
+                 for p in all_ps[:80]: 
                      txt = await p.inner_text()
-                     # Filtering Heuristics
-                     if len(txt) > 3 and len(txt) < 300: # Reasonable length
-                         bad_words = ["Reply", "View more", "Log in", "Follow", "likes", "comments", "share", "TikTok", "Upload"]
+                     if len(txt) > 3 and len(txt) < 300: 
+                         bad_words = ["Reply", "View more", "Log in", "Follow", "likes", "comments", "share", "TikTok", "Upload", "original sound"]
                          if not any(bw.lower() in txt.lower() for bw in bad_words):
                              candidates.append(txt)
-                 
-                 # Deduplicate
-                 data['comments'] = list(set(candidates))[:20] 
+                 data['comments'] = list(set(candidates))[:25] 
              except: pass
 
             
