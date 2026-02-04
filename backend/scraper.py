@@ -655,33 +655,70 @@ class TikTokScraper:
         data['comments'] = comments
 
         
-        # --- ULTIMATE FALLBACK: Parse Metadata from Description ---
-        # If DOM failed, the description often has: "1.9M Likes, 12.7K Comments. TikTok video from User..."
-        if data.get('description'):
-            desc = data['description']
-            import re
+        # --- ULTIMATE FALLBACK: Parse Metadata/Description for Stats ---
+        # Often the meta description has: "1.9M Likes, 12.7K Comments. TikTok video from User..."
+        try:
+            desc_text = ""
+            meta_desc = await page.query_selector('meta[name="description"]')
+            if meta_desc:
+                desc_text = await meta_desc.get_attribute('content')
+            elif data.get('description'):
+                desc_text = data['description']
             
-            # 1. Parse Stats (if 0)
-            if data['stats']['likes'] == 0:
-                match = re.search(r'([\d\.]+[KMB]?)\s*Likes', desc)
-                if match: data['stats']['likes'] = self._parse_stat(match.group(1))
-            
-            if data['stats']['comments'] == 0:
-                match = re.search(r'([\d\.]+[KMB]?)\s*Comments', desc)
-                if match: data['stats']['comments'] = self._parse_stat(match.group(1))
+            if desc_text:
+                import re
+                # Pattern: "1.2M Likes, 30K Comments" or "100K Views"
+                # Note: Views are rarely in description, but Likes/Comments often are.
                 
-            if data['stats']['views'] == 0:
-                # views often not in textual desc, but sometimes "X Views"
-                match = re.search(r'([\d\.]+[KMB]?)\s*Views', desc)
-                if match: data['stats']['views'] = self._parse_stat(match.group(1))
+                # Likes
+                if data['stats']['likes'] == 0:
+                    likes_match = re.search(r'([\d\.]+([KMB])?)\s+Likes', desc_text)
+                    if likes_match: data['stats']['likes'] = self._parse_stat(likes_match.group(1))
 
-            # 2. Parse Author (if Unknown)
-            if data.get('author') == "Unknown Author":
-                # "TikTok video from Name (@handle)"
-                match_handle = re.search(r'from\s+(.*?)\s+\(@(.*?)\)', desc)
-                if match_handle:
-                    data['author'] = match_handle.group(2) # Prefer Handle
-                else:
+                # Comments
+                if data['stats']['comments'] == 0:
+                    comm_match = re.search(r'([\d\.]+([KMB])?)\s+Comments', desc_text)
+                    if comm_match: data['stats']['comments'] = self._parse_stat(comm_match.group(1))
+                    
+                # Views (sometimes "1.2M Views")
+                if data['stats']['views'] == 0:
+                     views_match = re.search(r'([\d\.]+([KMB])?)\s+Views', desc_text)
+                     if views_match: data['stats']['views'] = self._parse_stat(views_match.group(1))
+
+        except Exception as e:
+            print(f"Meta stats fallback failed: {e}")
+
+        # --- STRATEGY C: Scorched Earth Comment Text ---
+        # If we still have 0 comments text, but we know there SHOULD be comments (from stats), grab paragraphs.
+        if not data['comments'] and data['stats']['comments'] > 0:
+             try:
+                 all_ps = await page.query_selector_all('p')
+                 candidates = []
+                 for p in all_ps[:60]: # Check first 60 paragraphs
+                     txt = await p.inner_text()
+                     # Filtering Heuristics
+                     if len(txt) > 3 and len(txt) < 300: # Reasonable length
+                         bad_words = ["Reply", "View more", "Log in", "Follow", "likes", "comments", "share", "TikTok", "Upload"]
+                         if not any(bw.lower() in txt.lower() for bw in bad_words):
+                             candidates.append(txt)
+                 
+                 # Deduplicate
+                 data['comments'] = list(set(candidates))[:20] 
+             except: pass
+
+            
+            # Fallback for Author parsing using Description
+            if data.get('author') == "Unknown Author" and desc_text:
+                try:
+                    # "TikTok video from Name (@handle)"
+                    match_handle = re.search(r'from\s+(.*?)\s+\(@(.*?)\)', desc_text)
+                    if match_handle:
+                        data['author'] = match_handle.group(2) # Prefer Handle
+                    else:
+                        # Try just "from Name"
+                        match_from = re.search(r'from\s+(.*?)\s*(?::|\()', desc_text)
+                        if match_from: data['author'] = match_from.group(1)
+                except: pass
                     # Try just "from Name"
                     match_from = re.search(r'from\s+(.*?)\s*(?::|\()', desc)
                     if match_from: data['author'] = match_from.group(1)
