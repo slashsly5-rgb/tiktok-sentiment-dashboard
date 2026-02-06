@@ -5,6 +5,7 @@ Provides HTTP endpoints for n8n workflow orchestration
 
 from flask import Flask, request, jsonify
 from flask_cors import CORS
+import os
 import threading
 import uuid
 import asyncio
@@ -16,7 +17,10 @@ import logging
 
 from config import Config
 from database import SupabaseClient
-from scraper import scrape_and_save
+try:
+    from scraper import scrape_and_save
+except ImportError:
+    scrape_and_save = None
 from analyzer import Analyzer
 from mistral_chat import MistralChatService
 from transform import (
@@ -37,16 +41,14 @@ from transform import (
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.FileHandler('../logs/api.log'),
-        logging.StreamHandler()
-    ]
+    handlers=[logging.StreamHandler()]
 )
 logger = logging.getLogger(__name__)
 
 # Initialize Flask app
 app = Flask(__name__)
-CORS(app)
+FRONTEND_URL = os.environ.get("FRONTEND_URL", "*")
+CORS(app, origins=[FRONTEND_URL] if FRONTEND_URL != "*" else ["*"])
 
 # Job storage (in-memory for MVP)
 jobs = {}
@@ -281,6 +283,9 @@ def scrape():
         }
     """
     try:
+        if scrape_and_save is None:
+            return jsonify({"error": "Scraper not available in this deployment"}), 503
+
         data = request.json
 
         keywords = data.get("keywords", [])

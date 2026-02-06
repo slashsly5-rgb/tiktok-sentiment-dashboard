@@ -1,0 +1,10 @@
+flask
+flask-cors
+gunicorn
+supabase
+psycopg2-binary
+httpx
+websockets
+python-dotenv
+openai
+mistralai
