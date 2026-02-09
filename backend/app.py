@@ -1029,8 +1029,8 @@ else:
                 </div>
                 
                 <div style="background:#1A1A1A; border:1px solid #333; padding:10px; border-radius:8px; margin-bottom:10px; flex-grow:1; overflow-y:auto;">
-                    <div style="font-size:10px; font-weight:700; color:#888; margin-bottom:4px;">PUBLIC REACTION & INSIGHTS:</div>
-                    <div style="font-size:11px; color:#DDD; line-height:1.4;">{summary[:500]}</div>
+                    <div style="font-size:10px; font-weight:700; color:#888; margin-bottom:4px;">PUBLIC REACTION & TOP COMMENTS SUMMARY:</div>
+                    <div style="font-size:11px; color:#DDD; line-height:1.4;">{summary}</div>
                     <div style="font-size:9px; color:#666; margin-top:5px; font-style:italic;">Source Report: {v.get('search_keyword', 'N/A')}</div>
                 </div>
                 
