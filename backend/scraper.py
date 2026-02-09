@@ -567,60 +567,38 @@ class TikTokScraper:
         for k in ['views', 'likes', 'comments', 'shares']:
             if k not in data['stats']: data['stats'][k] = 0
 
-        # Decoupled Stats Extraction with Explicit Waits
-        async def get_text_safe(selector, name):
-            try:
-                # Use Locator to handle detachment/re-rendering automatically
-                loc = page.locator(selector).first
-                if await loc.count() == 0: return None
+        # NUCLEAR OPTION: Direct JS Evaluation of all data-e2e attributes
+        # This bypasses Playwright's visibility checks and grabs raw text instantly.
+        try:
+            # Poll for Stats (up to 6s)
+            found_stats = {}
+            for _ in range(12):
+                found_stats = await page.evaluate("""() => {
+                    const data = {};
+                    const els = document.querySelectorAll('[data-e2e]');
+                    els.forEach(el => {
+                        const attr = el.getAttribute('data-e2e');
+                        // Collect key stats
+                        if (['like-count', 'comment-count', 'share-count', 'video-views'].includes(attr)) {
+                             data[attr] = el.innerText;
+                        }
+                    });
+                    return data;
+                }""")
                 
-                # Poll for text (up to 6s)
-                for _ in range(12):
-                    try:
-                        txt = await loc.inner_text(timeout=1000)
-                        if txt and txt.strip():
-                            # print(f"DEBUG: Found {name}: {txt}")
-                            return txt
-                    except: pass 
-                    await asyncio.sleep(0.5)
-                return await loc.inner_text()
-            except: return None
-
-        # Likes
-        try:
-            txt = await get_text_safe('[data-e2e="like-count"]', "Likes")
-            if txt: data['stats']['likes'] = self._parse_stat(txt)
-        except: pass
-
-        # Comments
-        try:
-            comm_selectors = ['[data-e2e="comment-count"]', 'strong[data-e2e="comment-count"]']
-            for sel in comm_selectors:
-                txt = await get_text_safe(sel, "Comments")
-                if txt:
-                    data['stats']['comments'] = self._parse_stat(txt)
+                # Check if we have valid data (non-empty)
+                if found_stats.get('comment-count') or found_stats.get('share-count'):
                     break
-        except: pass
+                await asyncio.sleep(0.5)
 
-        # Shares
-        try:
-            share_selectors = ['[data-e2e="share-count"]', 'strong[data-e2e="share-count"]']
-            for sel in share_selectors:
-                txt = await get_text_safe(sel, "Shares")
-                if txt:
-                    data['stats']['shares'] = self._parse_stat(txt)
-                    break
-        except: pass
-        
-        # Views
-        try:
-            view_selectors = ['[data-e2e="video-views"]', 'strong[data-e2e="video-views"]']
-            for sel in view_selectors:
-                txt = await get_text_safe(sel, "Views")
-                if txt:
-                    data['stats']['views'] = self._parse_stat(txt)
-                    break
-        except: pass
+            # Assign to data
+            if found_stats.get('like-count'): data['stats']['likes'] = self._parse_stat(found_stats['like-count'])
+            if found_stats.get('comment-count'): data['stats']['comments'] = self._parse_stat(found_stats['comment-count'])
+            if found_stats.get('share-count'): data['stats']['shares'] = self._parse_stat(found_stats['share-count'])
+            if found_stats.get('video-views'): data['stats']['views'] = self._parse_stat(found_stats['video-views'])
+
+        except Exception as e:
+            print(f"JS Stats extraction error: {e}")
 
         # Comments Text (Scroll and scrape)
         # Scroll down multiple times to trigger loading
@@ -750,6 +728,10 @@ class TikTokScraper:
             except: pass
 
         # Final Debug Log
+        if data['stats']['comments'] == 0 and len(comments) > 0:
+             # Emergency fill: If we found text, we know count >= len(text)
+             data['stats']['comments'] = len(comments)
+
         print(f"Scraped Data: {data.get('stats')} | Comments: {len(comments)}")
 
         await page.close()
