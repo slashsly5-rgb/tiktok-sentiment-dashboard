@@ -1035,7 +1035,11 @@ else:
                     <div style="border-top:1px solid #333; padding-top:8px;">
                         <div style="font-size:9px; font-weight:700; color:#666; margin-bottom:4px;">KEYWORDS & SLANG:</div>
                         <div style="display:flex; flex-wrap:wrap; gap:4px;">
-                            {''.join([f'<span style="background:#2C3E50; color:#BDC3C7; padding:2px 6px; border-radius:3px; font-size:9px;">{k}</span>' for k in v.get('discussion_points', [])[:7]])}
+                            {
+                                (lambda d: ''.join([f'<span style="background:#2C3E50; color:#BDC3C7; padding:2px 6px; border-radius:3px; font-size:9px;">{k.strip()}</span>' 
+                                            for k in (d if isinstance(d, list) else (d.split(',') if isinstance(d, str) else [])) 
+                                            if k and k.strip()][:7]))(v.get('discussion_points', []))
+                            }
                         </div>
                     </div>
                 </div>

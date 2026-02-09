@@ -56,7 +56,7 @@ class Analyzer:
             "key_issues": ["Main Key Insight 1", "Main Key Insight 2", "Critical Observation"],
             "trend_context": "Explanation of why this is trending. Use stats to justify 'High' viral potential.",
             "viral_potential": "High, Medium, or Low",
-            "discussion_points": ["Keyword 1", "Slang Term", "Short Phrase"],
+            "discussion_points": ["Keyword1", "Keyword2", "SlangTerm"], // STRICTLY NO HASHTAGS. Extract 5-7 distinct words/phrases from comments.
             "sentiment": "Positive, Negative, Neutral, or Mixed",
             "sentiment_score": 5  // Integer between 1 (Very Negative) and 10 (Very Positive)
         }}
