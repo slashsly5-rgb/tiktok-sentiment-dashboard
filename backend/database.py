@@ -237,11 +237,16 @@ class SupabaseClient:
                         if isinstance(sentiment_data, dict):
                             video['sentiment'] = sentiment_data.get('sentiment')
                             video['sentiment_score'] = sentiment_data.get('sentiment_score')
-                            video['summary'] = sentiment_data.get('summary') or sentiment_data.get('discussion_points')
+                            video['summary'] = sentiment_data.get('summary')
                             video['topic'] = sentiment_data.get('topic')
                             video['key_issues'] = sentiment_data.get('key_issues', [])
                             video['trend_context'] = sentiment_data.get('trend_context', "N/A")
                             video['viral_potential'] = sentiment_data.get('viral_potential', "Low")
+                            video['discussion_points'] = sentiment_data.get('discussion_points', [])
+                            
+                            # Fallback if summary is missing
+                            if not video['summary']:
+                                video['summary'] = video['discussion_points']
                         # Remove the nested object
                         del video['sentiment_analysis']
 
