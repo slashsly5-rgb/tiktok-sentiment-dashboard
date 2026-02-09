@@ -52,11 +52,11 @@ class Analyzer:
         Return a JSON object with exactly these fields:
         {{
             "topic": "The main subject or title of the video (Max 5 words)",
-            "summary": "Synthesize the provided User Comments into a detailed narrative. Focus on the Top 20 comments provided. Identify major themes, agreements, disagreements, and quote at least 2 distinct user opinions directly. Do NOT summarize the video description.",
+            "summary": "MANDATORY: Synthesize the provided Top 20 User Comments into a detailed narrative. The comments are likely in Bahasa Melayu/Malay; you MUST translate the gist and summarize their sentiment in English. Identify major themes, agreements, disagreements, and quote at least 2 distinct user opinions (translated if in Malay). Do NOT mention hashtags here. Do NOT summarize the video description.",
             "key_issues": ["Main Key Insight 1", "Main Key Insight 2", "Critical Observation"],
             "trend_context": "Explanation of why this is trending. Use stats to justify 'High' viral potential.",
             "viral_potential": "High, Medium, or Low",
-            "discussion_points": ["Keyword1", "Keyword2", "SlangTerm"], // STRICTLY NO HASHTAGS. Extract 5-7 distinct words/phrases from comments.
+            "discussion_points": ["Specific Keyword", "Malay Slang Found", "Short Phrase"], // STRICTLY NO HASHTAGS. Extract 5-7 distinct words/slang used in Malay/English comments.
             "sentiment": "Positive, Negative, Neutral, or Mixed",
             "sentiment_score": 5  // Integer between 1 (Very Negative) and 10 (Very Positive)
         }}
