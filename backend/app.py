@@ -1044,8 +1044,8 @@ else:
                 <div style="border-top:1px solid #333; padding-top:12px; display:flex; justify-content:space-between; color:#999; font-size:12px;">
                     <span title="Views">👁️ {fmt_num(v.get('views_count',0))}</span>
                     <span title="Likes">❤️ {fmt_num(v.get('likes_count',0))}</span>
-                    <span title="Comments">💬 {fmt_num(v.get('stats_comment_count',0))}</span>
-                    <span title="Shares">↗️ {fmt_num(v.get('stats_share_count',0))}</span>
+                    <span title="Comments">💬 {fmt_num(v.get('comments_count',0))}</span>
+                    <span title="Shares">↗️ {fmt_num(v.get('shares_count',0))}</span>
                 </div>
             </div>
             """
