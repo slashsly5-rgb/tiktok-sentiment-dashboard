@@ -27,7 +27,16 @@ def extract_tiktok_id(url: str) -> Optional[str]:
         https://www.tiktok.com/@user/video/1234567890 -> 1234567890
     """
     try:
+        # Standard /video/ URL
         match = re.search(r'/video/(\d+)', url)
+        if match:
+            return match.group(1)
+        # Photo/slide URL format
+        match = re.search(r'/photo/(\d+)', url)
+        if match:
+            return match.group(1)
+        # Bare numeric ID at end of URL (e.g. after redirect)
+        match = re.search(r'/(\d{15,})(?:\?|$)', url)
         if match:
             return match.group(1)
         return None
@@ -168,7 +177,7 @@ class TikTokScraper:
              await stealth_async(page)
         except: pass
 
-        encoded_keyword = keyword.replace(" ", "%20")
+        encoded_keyword = urllib.parse.quote(keyword)
         url = f"https://www.tiktok.com/search?q={encoded_keyword}"
         
         print(f"Navigating to {url}")
@@ -218,16 +227,26 @@ class TikTokScraper:
             # Do NOT return here, let it fall through to the fallback!
             
         # Try to find video containers with stats for "Most Engaged" sorting
-        # Search Item Selector: [data-e2e="search_top_item"] or [data-e2e="search_item"]
-        try:
-             # Wait for at least one search item
-             await page.wait_for_selector('[data-e2e="search_card"]', state="attached", timeout=5000)
-        except: pass
+        # TikTok updates selectors frequently - try multiple variants
+        search_card_selectors = [
+            '[data-e2e="search_card"]',
+            '[data-e2e="search-card"]',
+            '[data-e2e="search_top-item"]',
+            '[data-e2e="search-common-link"]',
+            'div[class*="DivItemCardContainer"]',
+            'div[class*="DivVideoCardContainer"]',
+        ]
 
-        # Get all cards
-        # We try broad selection then filter
-        # Common selectors for view count: .video-count, [data-e2e="video-views"]
-        cards = await page.query_selector_all('[data-e2e="search_card"]')
+        cards = []
+        for card_sel in search_card_selectors:
+            try:
+                await page.wait_for_selector(card_sel, state="attached", timeout=3000)
+                cards = await page.query_selector_all(card_sel)
+                if cards:
+                    logger.info(f"Found {len(cards)} cards with selector: {card_sel}")
+                    break
+            except:
+                continue
         
         candidates = []
         
@@ -240,10 +259,21 @@ class TikTokScraper:
                 
                 # 2. Get View Count
                 views = 0
-                # Try multiple selectors for views
-                view_el = await card.query_selector('[data-e2e="video-views"]')
-                if not view_el: view_el = await card.query_selector('.video-count')
-                
+                # Try multiple selectors for views (TikTok changes these frequently)
+                view_selectors = [
+                    '[data-e2e="video-views"]',
+                    '.video-count',
+                    'strong[data-e2e="video-views"]',
+                    'span[class*="SpanOtherInfos"]',
+                    'span[class*="VideoCount"]',
+                    'div[class*="DivPlayCount"]',
+                ]
+                view_el = None
+                for vs in view_selectors:
+                    view_el = await card.query_selector(vs)
+                    if view_el:
+                        break
+
                 if view_el:
                     text = await view_el.inner_text() 
                     # Parse "1.2M", "500K", "100"
@@ -332,14 +362,32 @@ class TikTokScraper:
         await page.close()
         return video_links[:limit]
 
+    async def _resolve_short_url(self, url):
+        """Resolve short/redirect TikTok URLs (vm.tiktok.com, vt.tiktok.com) to full URLs"""
+        if 'vm.tiktok.com' in url or 'vt.tiktok.com' in url or '/t/' in url:
+            try:
+                page = await self.context.new_page()
+                await page.goto(url, wait_until='domcontentloaded', timeout=10000)
+                resolved = page.url
+                await page.close()
+                if '/video/' in resolved or '/photo/' in resolved:
+                    logger.info(f"Resolved short URL: {url} -> {resolved}")
+                    return resolved
+            except Exception as e:
+                logger.warning(f"Failed to resolve short URL {url}: {e}")
+        return url
+
     async def scrape_video_details(self, url):
         import random
+
+        # Resolve short URLs first
+        url = await self._resolve_short_url(url)
+
         page = await self.context.new_page()
         print(f"Scraping {url}")
         
         data = {'url': url}
-        data = {'url': url}
-        max_retries = 1 # Optimized: Faster fail
+        max_retries = 2  # Allow more retries for reliability
         
         for attempt in range(max_retries + 1):
             try:
@@ -372,10 +420,15 @@ class TikTokScraper:
                     await page.mouse.click(10, 10)
                 except: pass
 
-                # Wait for load
+                # Wait for load - give TikTok's heavy JS time to render
                 try:
-                    await page.wait_for_load_state('networkidle', timeout=5000) # Optimized: 5s max
-                except: pass
+                    await page.wait_for_load_state('networkidle', timeout=10000)
+                except:
+                    # Fallback: wait for domcontentloaded at minimum
+                    try:
+                        await page.wait_for_load_state('domcontentloaded', timeout=5000)
+                    except: pass
+                    await asyncio.sleep(2)  # Extra buffer for JS rendering
 
                 # Capture Screenshot for UI
                 import base64
@@ -405,48 +458,131 @@ class TikTokScraper:
         
         try:
             content = await page.content()
+
+            def _extract_from_item(item):
+                """Helper to extract data from a TikTok item struct"""
+                extracted = {}
+                extracted['description'] = item.get('desc', '')
+                # Author can be string or dict
+                author_val = item.get('author', '')
+                if isinstance(author_val, dict):
+                    extracted['author'] = author_val.get('nickname', author_val.get('uniqueId', ''))
+                else:
+                    extracted['author'] = str(author_val)
+                stats = item.get('stats', {})
+                extracted['stats'] = {
+                    'views': stats.get('playCount', 0) or stats.get('viewCount', 0) or stats.get('views', 0),
+                    'likes': stats.get('diggCount', 0) or stats.get('likeCount', 0) or stats.get('likes', 0),
+                    'shares': stats.get('shareCount', 0) or stats.get('shares', 0),
+                    'comments': stats.get('commentCount', 0) or stats.get('comments', 0)
+                }
+                video_info = item.get('video', {})
+                extracted['thumbnail'] = video_info.get('cover', video_info.get('dynamicCover', ''))
+                challenges = item.get('challenges', [])
+                extracted['hashtags'] = [c.get('title') for c in challenges if isinstance(c, dict)]
+                return extracted
+
+            json_extracted = False
+
+            # Strategy 1: SIGI_STATE (legacy but still works on some pages)
             sigi_match = re.search(r'<script id="SIGI_STATE" type="application/json">(.*?)</script>', content)
             if sigi_match:
-                sigi_data = json.loads(sigi_match.group(1))
-                item_module = sigi_data.get('ItemModule', {})
-                for key, item in item_module.items():
-                    data['description'] = item.get('desc', data.get('description', ''))
-                    data['author'] = item.get('author', data.get('author', ''))
-                    stats = item.get('stats', {})
-                    data['stats'] = {
-                        'views': stats.get('playCount', 0),
-                        'likes': stats.get('diggCount', 0),
-                        'shares': stats.get('shareCount', 0),
-                        'comments': stats.get('commentCount', 0)
-                    }
-                    video_info = item.get('video', {})
-                    data['thumbnail'] = video_info.get('cover', '')
-                    challenges = item.get('challenges', [])
-                    data['hashtags'] = [c.get('title') for c in challenges]
-                    break
-            
-            # Universal Data Fallback
-            if 'description' not in data:
+                try:
+                    sigi_data = json.loads(sigi_match.group(1))
+                    item_module = sigi_data.get('ItemModule', {})
+                    for key, item in item_module.items():
+                        extracted = _extract_from_item(item)
+                        data.update(extracted)
+                        json_extracted = True
+                        break
+                except Exception as e:
+                    logger.warning(f"SIGI_STATE parse failed: {e}")
+
+            # Strategy 2: __UNIVERSAL_DATA_FOR_REHYDRATION__ (current primary)
+            if not json_extracted:
                 univ_match = re.search(r'<script id="__UNIVERSAL_DATA_FOR_REHYDRATION__" type="application/json">(.*?)</script>', content)
                 if univ_match:
-                    univ_data = json.loads(univ_match.group(1))
-                    default_scope = univ_data.get('__DEFAULT_SCOPE__', {})
-                    webapp_video_detail = default_scope.get('webapp.video-detail', {})
-                    item_info = webapp_video_detail.get('itemInfo', {}).get('itemStruct', {})
-                    if item_info:
-                        data['description'] = item_info.get('desc', data.get('description', ''))
-                        data['author'] = item_info.get('author', {}).get('nickname', data.get('author', ''))
-                        stats = item_info.get('stats', {})
-                        data['stats'] = {
-                            'views': stats.get('playCount', 0),
-                            'likes': stats.get('diggCount', 0),
-                            'shares': stats.get('shareCount', 0),
-                            'comments': stats.get('commentCount', 0)
-                        }
-                        video_info = item_info.get('video', {})
-                        data['thumbnail'] = video_info.get('cover', '')
-                        challenges = item_info.get('challenges', [])
-                        data['hashtags'] = [c.get('title') for c in challenges]
+                    try:
+                        univ_data = json.loads(univ_match.group(1))
+                        default_scope = univ_data.get('__DEFAULT_SCOPE__', {})
+
+                        # Try multiple paths - TikTok changes these
+                        item_info = None
+                        # Path A: webapp.video-detail -> itemInfo -> itemStruct
+                        vd = default_scope.get('webapp.video-detail', {})
+                        item_info = vd.get('itemInfo', {}).get('itemStruct', None)
+                        # Path B: webapp.video-detail -> itemStruct (flat)
+                        if not item_info:
+                            item_info = vd.get('itemStruct', None)
+                        # Path C: webapp.video.detail (dot notation variant)
+                        if not item_info:
+                            vd2 = default_scope.get('webapp.video.detail', {})
+                            item_info = vd2.get('itemInfo', {}).get('itemStruct', None)
+                            if not item_info:
+                                item_info = vd2.get('itemStruct', None)
+
+                        if item_info:
+                            extracted = _extract_from_item(item_info)
+                            data.update(extracted)
+                            json_extracted = True
+                    except Exception as e:
+                        logger.warning(f"UNIVERSAL_DATA parse failed: {e}")
+
+            # Strategy 3: __NEXT_DATA__ (newer SSR pages)
+            if not json_extracted:
+                next_match = re.search(r'<script id="__NEXT_DATA__" type="application/json"[^>]*>(.*?)</script>', content)
+                if next_match:
+                    try:
+                        next_data = json.loads(next_match.group(1))
+                        props = next_data.get('props', {}).get('pageProps', {})
+                        item_info = props.get('itemInfo', {}).get('itemStruct', None)
+                        if not item_info:
+                            item_info = props.get('videoData', None)
+                        if item_info:
+                            extracted = _extract_from_item(item_info)
+                            data.update(extracted)
+                            json_extracted = True
+                    except Exception as e:
+                        logger.warning(f"NEXT_DATA parse failed: {e}")
+
+            # Strategy 4: Scan for any JSON-LD schema with video stats
+            if not json_extracted:
+                try:
+                    ld_matches = re.findall(r'<script type="application/ld\+json">(.*?)</script>', content)
+                    for ld_str in ld_matches:
+                        ld_data = json.loads(ld_str)
+                        if isinstance(ld_data, dict) and ld_data.get('@type') in ('VideoObject', 'SocialMediaPosting'):
+                            interaction_stats = ld_data.get('interactionStatistic', [])
+                            if isinstance(interaction_stats, list):
+                                for stat in interaction_stats:
+                                    stat_type = stat.get('interactionType', {})
+                                    type_name = stat_type if isinstance(stat_type, str) else stat_type.get('@type', '')
+                                    count = int(stat.get('userInteractionCount', 0))
+                                    if 'Watch' in type_name or 'View' in type_name:
+                                        if 'stats' not in data: data['stats'] = {}
+                                        data['stats']['views'] = count
+                                    elif 'Like' in type_name:
+                                        if 'stats' not in data: data['stats'] = {}
+                                        data['stats']['likes'] = count
+                                    elif 'Comment' in type_name:
+                                        if 'stats' not in data: data['stats'] = {}
+                                        data['stats']['comments'] = count
+                                    elif 'Share' in type_name:
+                                        if 'stats' not in data: data['stats'] = {}
+                                        data['stats']['shares'] = count
+                            if data.get('stats', {}).get('views', 0) > 0:
+                                data.setdefault('description', ld_data.get('description', ''))
+                                data.setdefault('author', ld_data.get('creator', ''))
+                                data.setdefault('thumbnail', ld_data.get('thumbnailUrl', ''))
+                                json_extracted = True
+                                break
+                except Exception as e:
+                    logger.warning(f"JSON-LD parse failed: {e}")
+
+            if json_extracted:
+                logger.info(f"JSON extraction successful. Views: {data.get('stats', {}).get('views', 'N/A')}")
+            else:
+                logger.warning("All JSON extraction strategies failed, falling back to DOM scraping")
 
         except Exception as e:
             print(f"JSON extraction failed: {e}")
@@ -468,11 +604,21 @@ class TikTokScraper:
                     title = await page.title()
                     # DETECT GENERIC PAGE (Login Wall / Home)
                     if "Make Your Day" in title or title.strip() == "TikTok" or "Log in" in title:
-                        logger.warning(f"⚠️ Redirected to Generic Page (Login/Home). Retrying or Skipping {url}...")
-                        # We can either retry or just return None to skip invalid data
-                        # Let's try to reload once? Or just fail fast.
-                        # For now, FAIL FAST so we don't save garbage.
-                        return None
+                        logger.warning(f"Redirected to Generic Page (Login/Home). Attempting reload of {url}...")
+                        # Try one more time with a fresh navigation
+                        try:
+                            await page.goto(url, wait_until='domcontentloaded', timeout=15000)
+                            await asyncio.sleep(3)
+                            await page.keyboard.press("Escape")
+                            await asyncio.sleep(1)
+                            title = await page.title()
+                            if "Make Your Day" in title or title.strip() == "TikTok" or "Log in" in title:
+                                logger.warning(f"Still on generic page after retry. Skipping {url}")
+                                await page.close()
+                                return None
+                        except:
+                            await page.close()
+                            return None
                         
                     # Title format: "Description | Author | TikTok" or similar
                     if "|" in title:
@@ -492,26 +638,44 @@ class TikTokScraper:
         if 'stats' not in data or data['stats'].get('likes', 0) == 0:
             dom_stats = {'views': 0, 'likes': 0, 'shares': 0, 'comments': 0}
             try:
-                # Likes
-                like_el = await page.query_selector('[data-e2e="like-count"]')
-                if like_el: dom_stats['likes'] = self._parse_stat(await like_el.inner_text())
-                
-                # Comments
-                comm_el = await page.query_selector('[data-e2e="comment-count"]')
-                if comm_el: dom_stats['comments'] = self._parse_stat(await comm_el.inner_text())
-                
-                # Shares 
                 # Wait for interaction/stats to load (Critical for DOM scraping)
                 try:
                     await page.wait_for_selector('[data-e2e="like-count"]', state="visible", timeout=8000)
-                except: 
+                except:
                     logger.warning("Timeout waiting for stats selector")
 
+                # Views - TikTok shows views in multiple places on the video page
+                view_selectors = [
+                    '[data-e2e="video-views"]',
+                    'strong[data-e2e="video-views"]',
+                    '[data-e2e="browse-video-count"]',
+                    'span[class*="SpanVideoPlayCount"]',
+                    'div[class*="DivVideoCount"]',
+                ]
+                for vs in view_selectors:
+                    view_el = await page.query_selector(vs)
+                    if view_el:
+                        dom_stats['views'] = self._parse_stat(await view_el.inner_text())
+                        if dom_stats['views'] > 0:
+                            break
+
+                # Likes
+                like_el = await page.query_selector('[data-e2e="like-count"]')
+                if like_el: dom_stats['likes'] = self._parse_stat(await like_el.inner_text())
+
+                # Comments
+                comm_el = await page.query_selector('[data-e2e="comment-count"]')
+                if comm_el: dom_stats['comments'] = self._parse_stat(await comm_el.inner_text())
+
+                # Shares
                 share_el = await page.query_selector('[data-e2e="share-count"]')
                 if share_el: dom_stats['shares'] = self._parse_stat(await share_el.inner_text())
-                
+
                 if 'stats' not in data: data['stats'] = {}
-                data['stats'].update(dom_stats)
+                # Only update with non-zero values to avoid overwriting good JSON data
+                for k, v in dom_stats.items():
+                    if v > 0 and data['stats'].get(k, 0) == 0:
+                        data['stats'][k] = v
             except Exception as e:
                 print(f"DOM stats extraction failed: {e}")
 
@@ -570,32 +734,68 @@ class TikTokScraper:
         # NUCLEAR OPTION: Direct JS Evaluation of all data-e2e attributes
         # This bypasses Playwright's visibility checks and grabs raw text instantly.
         try:
-            # Poll for Stats (up to 6s)
+            # Poll for Stats (up to 8s)
             found_stats = {}
-            for _ in range(12):
+            for _ in range(16):
                 found_stats = await page.evaluate("""() => {
                     const data = {};
                     const els = document.querySelectorAll('[data-e2e]');
                     els.forEach(el => {
                         const attr = el.getAttribute('data-e2e');
-                        // Collect key stats
-                        if (['like-count', 'comment-count', 'share-count', 'video-views'].includes(attr)) {
+                        // Collect key stats - include all known variants
+                        if (['like-count', 'comment-count', 'share-count', 'video-views',
+                             'browse-like-count', 'browse-comment-count', 'browse-share-count',
+                             'browse-video-count', 'undefined-count'].includes(attr)) {
                              data[attr] = el.innerText;
                         }
                     });
+
+                    // Fallback: Try to find view count from aria-labels or nearby text
+                    if (!data['video-views'] && !data['browse-video-count']) {
+                        // Some TikTok layouts show views in a span with specific class patterns
+                        const viewCandidates = document.querySelectorAll('strong[class*="Count"], span[class*="PlayCount"], span[class*="VideoCount"]');
+                        viewCandidates.forEach(el => {
+                            const text = el.innerText.trim();
+                            if (text && /^[\\d\\.]+[KMBkmb]?$/.test(text)) {
+                                if (!data['video-views-fallback']) {
+                                    data['video-views-fallback'] = text;
+                                }
+                            }
+                        });
+                    }
+
                     return data;
                 }""")
-                
+
                 # Check if we have valid data (non-empty)
-                if found_stats.get('comment-count') or found_stats.get('share-count'):
+                if found_stats.get('comment-count') or found_stats.get('share-count') or found_stats.get('like-count'):
                     break
                 await asyncio.sleep(0.5)
 
-            # Assign to data
-            if found_stats.get('like-count'): data['stats']['likes'] = self._parse_stat(found_stats['like-count'])
-            if found_stats.get('comment-count'): data['stats']['comments'] = self._parse_stat(found_stats['comment-count'])
-            if found_stats.get('share-count'): data['stats']['shares'] = self._parse_stat(found_stats['share-count'])
-            if found_stats.get('video-views'): data['stats']['views'] = self._parse_stat(found_stats['video-views'])
+            # Assign to data (only overwrite zeros)
+            if found_stats.get('like-count') and data['stats'].get('likes', 0) == 0:
+                data['stats']['likes'] = self._parse_stat(found_stats['like-count'])
+            if found_stats.get('comment-count') and data['stats'].get('comments', 0) == 0:
+                data['stats']['comments'] = self._parse_stat(found_stats['comment-count'])
+            if found_stats.get('share-count') and data['stats'].get('shares', 0) == 0:
+                data['stats']['shares'] = self._parse_stat(found_stats['share-count'])
+
+            # Views: try all possible keys
+            if data['stats'].get('views', 0) == 0:
+                for vk in ['video-views', 'browse-video-count', 'video-views-fallback']:
+                    if found_stats.get(vk):
+                        parsed = self._parse_stat(found_stats[vk])
+                        if parsed > 0:
+                            data['stats']['views'] = parsed
+                            break
+
+            # Also try browse- prefixed variants
+            if found_stats.get('browse-like-count') and data['stats'].get('likes', 0) == 0:
+                data['stats']['likes'] = self._parse_stat(found_stats['browse-like-count'])
+            if found_stats.get('browse-comment-count') and data['stats'].get('comments', 0) == 0:
+                data['stats']['comments'] = self._parse_stat(found_stats['browse-comment-count'])
+            if found_stats.get('browse-share-count') and data['stats'].get('shares', 0) == 0:
+                data['stats']['shares'] = self._parse_stat(found_stats['browse-share-count'])
 
         except Exception as e:
             print(f"JS Stats extraction error: {e}")
@@ -738,23 +938,28 @@ class TikTokScraper:
         return data
 
     def _parse_stat(self, text):
-        """Helper to parse '1.2M', '10K', '100'"""
+        """Helper to parse '1.2M', '10K', '100', '1,234', '1.2k views'"""
         if not text: return 0
-        text = str(text).upper().replace(',', '').strip()
+        text = str(text).strip()
+        # Remove common suffixes like "views", "likes", etc.
+        text = re.sub(r'\s*(views?|likes?|comments?|shares?)\s*$', '', text, flags=re.IGNORECASE)
+        text = text.upper().replace(',', '').replace(' ', '').strip()
+        if not text: return 0
         try:
             multiplier = 1
-            if 'K' in text:
+            if text.endswith('K'):
                 multiplier = 1000
-                text = text.replace('K', '')
-            elif 'M' in text:
+                text = text[:-1]
+            elif text.endswith('M'):
                 multiplier = 1000000
-                text = text.replace('M', '')
-            elif 'B' in text:
+                text = text[:-1]
+            elif text.endswith('B'):
                 multiplier = 1000000000
-                text = text.replace('B', '')
-                
+                text = text[:-1]
+
             return int(float(text) * multiplier)
-        except: return 0
+        except:
+            return 0
 
 async def _save_video_to_db(db_client, video_record, comments):
     """Helper to save video and comments to DB"""
@@ -790,15 +995,22 @@ async def scrape_direct_urls(urls: List[str], db_client: SupabaseClient, scraper
             logger.info(f"Direct Scraping: {url}")
             tiktok_id = extract_tiktok_id(url)
             if not tiktok_id:
-                logger.warning(f"Invalid TikTok URL: {url}")
-                continue
-                
+                # May be a short URL - scrape_video_details will resolve it
+                logger.info(f"Could not extract ID from URL (may be short URL): {url}")
+
             video_data = await scraper.scrape_video_details(url)
             if video_data:
+                # Re-extract tiktok_id from resolved URL if not found initially
+                resolved_url = video_data.get('url', url)
+                if not tiktok_id:
+                    tiktok_id = extract_tiktok_id(resolved_url)
+                if not tiktok_id:
+                    logger.warning(f"Still could not extract TikTok ID from {resolved_url}. Skipping.")
+                    continue
                 # Prepare record
                 video_record = {
                     "tiktok_id": tiktok_id,
-                    "url": url,
+                    "url": resolved_url,
                     "author_username": video_data.get("author", "Unknown"),
                     "description": video_data.get("description", ""),
                     "views_count": int(video_data.get("stats", {}).get("views", 0)),
