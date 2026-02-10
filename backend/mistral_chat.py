@@ -143,7 +143,10 @@ class MistralChatService:
                     v_data = video_map.get(vid, {})
                     views = v_data.get("views_count", 0) or 0
                     comments = v_data.get("comments_count", 0) or 0
-                    context_parts.append(f"{count+1}. [Views: {views:,} | Comments: {comments:,}] {summary}")
+                    
+                    # Only show views if > 0 to prevent "no views" hallucination
+                    view_str = f"Views: {views:,} | " if views > 0 else ""
+                    context_parts.append(f"{count+1}. [{view_str}Comments: {comments:,}] {summary}")
                     count += 1
             if count == 0:
                  context_parts.append("No summaries available.")
@@ -283,8 +286,9 @@ class MistralChatService:
                         "Ignore hashtags and generic video descriptions unless necessary for context."
                         "Your goal is to be the 'Voice of the People'. Explain WHAT they are saying and WHY they feel that way."
                         "Do not just list stats. Interpret the emotions, sarcasm, and specific complaints found in the raw comments."
-                        "IMPORTANT: You have access to view counts for each video summary. Use this to gauge public interest."
-                        "If a video has high views, emphasize its impact. NEVER say a video has 'no views' unless the stats literally say 0."
+                        "CRITICAL: If a video has comments, treat it as HIGH ENGAGEMENT. Ignore '0 views' or low view counts if comments exist."
+                        "NEVER interpret '0 views' as lack of interest if there are people commenting. Assume the view count data is missing."
+                        "Focus strictly on the sentiment of the comments."
                         "If asked about a specific topic, quote real comments from the context to support your answer."
                     )
                 },
