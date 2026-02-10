@@ -4,6 +4,7 @@ import urllib.parse
 import re
 import os
 import json
+import httpx
 from typing import Optional, List, Dict, Any
 from database import SupabaseClient
 import logging
@@ -11,6 +12,318 @@ import logging
 # Configure logging
 # logging.basicConfig(level=logging.INFO) # REMOVED to avoid conflict
 logger = logging.getLogger(__name__)
+
+# Shared HTTP headers that mimic a real browser (used for non-Playwright requests)
+_HTTP_HEADERS = {
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
+    'Accept-Language': 'en-US,en;q=0.9',
+    'Accept-Encoding': 'gzip, deflate, br',
+    'Sec-Ch-Ua': '"Google Chrome";v="131", "Chromium";v="131", "Not_A Brand";v="24"',
+    'Sec-Ch-Ua-Mobile': '?0',
+    'Sec-Ch-Ua-Platform': '"Windows"',
+    'Sec-Fetch-Dest': 'document',
+    'Sec-Fetch-Mode': 'navigate',
+    'Sec-Fetch-Site': 'none',
+    'Sec-Fetch-User': '?1',
+    'Upgrade-Insecure-Requests': '1',
+    'Cache-Control': 'max-age=0',
+}
+
+
+def _extract_from_item(item):
+    """Helper to extract data from a TikTok item struct (JSON embedded in page)"""
+    extracted = {}
+    extracted['description'] = item.get('desc', '')
+    # Author can be string or dict
+    author_val = item.get('author', '')
+    if isinstance(author_val, dict):
+        extracted['author'] = author_val.get('nickname', author_val.get('uniqueId', ''))
+    else:
+        extracted['author'] = str(author_val)
+    stats = item.get('stats', {})
+    extracted['stats'] = {
+        'views': stats.get('playCount', 0) or stats.get('viewCount', 0) or stats.get('views', 0),
+        'likes': stats.get('diggCount', 0) or stats.get('likeCount', 0) or stats.get('likes', 0),
+        'shares': stats.get('shareCount', 0) or stats.get('shares', 0),
+        'comments': stats.get('commentCount', 0) or stats.get('comments', 0)
+    }
+    video_info = item.get('video', {})
+    extracted['thumbnail'] = video_info.get('cover', video_info.get('dynamicCover', ''))
+    challenges = item.get('challenges', [])
+    extracted['hashtags'] = [c.get('title') for c in challenges if isinstance(c, dict)]
+    return extracted
+
+
+def _extract_json_from_html(html_content: str) -> Optional[dict]:
+    """
+    Extract video data from TikTok HTML without a browser.
+    Tries all known JSON embedding strategies.
+    Returns extracted data dict or None.
+    """
+    data = {}
+    json_extracted = False
+
+    # Strategy 1: SIGI_STATE (legacy)
+    sigi_match = re.search(r'<script id="SIGI_STATE" type="application/json">(.*?)</script>', html_content, re.DOTALL)
+    if sigi_match:
+        try:
+            sigi_data = json.loads(sigi_match.group(1))
+            item_module = sigi_data.get('ItemModule', {})
+            for key, item in item_module.items():
+                extracted = _extract_from_item(item)
+                data.update(extracted)
+                json_extracted = True
+                break
+        except Exception as e:
+            logger.warning(f"SIGI_STATE parse failed: {e}")
+
+    # Strategy 2: __UNIVERSAL_DATA_FOR_REHYDRATION__ (current primary)
+    if not json_extracted:
+        univ_match = re.search(r'<script id="__UNIVERSAL_DATA_FOR_REHYDRATION__" type="application/json">(.*?)</script>', html_content, re.DOTALL)
+        if univ_match:
+            try:
+                univ_data = json.loads(univ_match.group(1))
+                default_scope = univ_data.get('__DEFAULT_SCOPE__', {})
+
+                item_info = None
+                # Path A
+                vd = default_scope.get('webapp.video-detail', {})
+                item_info = vd.get('itemInfo', {}).get('itemStruct', None)
+                # Path B
+                if not item_info:
+                    item_info = vd.get('itemStruct', None)
+                # Path C
+                if not item_info:
+                    vd2 = default_scope.get('webapp.video.detail', {})
+                    item_info = vd2.get('itemInfo', {}).get('itemStruct', None)
+                    if not item_info:
+                        item_info = vd2.get('itemStruct', None)
+
+                if item_info:
+                    extracted = _extract_from_item(item_info)
+                    data.update(extracted)
+                    json_extracted = True
+            except Exception as e:
+                logger.warning(f"UNIVERSAL_DATA parse failed: {e}")
+
+    # Strategy 3: __NEXT_DATA__
+    if not json_extracted:
+        next_match = re.search(r'<script id="__NEXT_DATA__" type="application/json"[^>]*>(.*?)</script>', html_content, re.DOTALL)
+        if next_match:
+            try:
+                next_data = json.loads(next_match.group(1))
+                props = next_data.get('props', {}).get('pageProps', {})
+                item_info = props.get('itemInfo', {}).get('itemStruct', None)
+                if not item_info:
+                    item_info = props.get('videoData', None)
+                if item_info:
+                    extracted = _extract_from_item(item_info)
+                    data.update(extracted)
+                    json_extracted = True
+            except Exception as e:
+                logger.warning(f"NEXT_DATA parse failed: {e}")
+
+    # Strategy 4: JSON-LD schema
+    if not json_extracted:
+        try:
+            ld_matches = re.findall(r'<script type="application/ld\+json">(.*?)</script>', html_content, re.DOTALL)
+            for ld_str in ld_matches:
+                ld_data = json.loads(ld_str)
+                if isinstance(ld_data, dict) and ld_data.get('@type') in ('VideoObject', 'SocialMediaPosting'):
+                    interaction_stats = ld_data.get('interactionStatistic', [])
+                    if isinstance(interaction_stats, list):
+                        stats = {}
+                        for stat in interaction_stats:
+                            stat_type = stat.get('interactionType', {})
+                            type_name = stat_type if isinstance(stat_type, str) else stat_type.get('@type', '')
+                            count = int(stat.get('userInteractionCount', 0))
+                            if 'Watch' in type_name or 'View' in type_name:
+                                stats['views'] = count
+                            elif 'Like' in type_name:
+                                stats['likes'] = count
+                            elif 'Comment' in type_name:
+                                stats['comments'] = count
+                            elif 'Share' in type_name:
+                                stats['shares'] = count
+                        if stats.get('views', 0) > 0 or stats.get('likes', 0) > 0:
+                            data['stats'] = stats
+                            data.setdefault('description', ld_data.get('description', ''))
+                            data.setdefault('author', ld_data.get('creator', ''))
+                            data.setdefault('thumbnail', ld_data.get('thumbnailUrl', ''))
+                            json_extracted = True
+                            break
+        except Exception as e:
+            logger.warning(f"JSON-LD parse failed: {e}")
+
+    # Strategy 5: Meta tag fallback for description/stats from text
+    if not json_extracted or not data.get('description'):
+        try:
+            meta_match = re.search(r'<meta\s+name="description"\s+content="(.*?)"', html_content)
+            if meta_match:
+                meta_text = meta_match.group(1)
+                if not data.get('description'):
+                    data['description'] = meta_text.split(' on TikTok')[0] if ' on TikTok' in meta_text else meta_text
+
+                # Parse stats from meta: "1.9M Likes, 12.7K Comments"
+                if 'stats' not in data:
+                    data['stats'] = {'views': 0, 'likes': 0, 'shares': 0, 'comments': 0}
+                flags = re.IGNORECASE
+                if data['stats'].get('likes', 0) == 0:
+                    m = re.search(r'([\d\.]+[KMB]?)\s+Likes?', meta_text, flags)
+                    if m: data['stats']['likes'] = _parse_stat_static(m.group(1))
+                if data['stats'].get('comments', 0) == 0:
+                    m = re.search(r'([\d\.]+[KMB]?)\s+Comments?', meta_text, flags)
+                    if m: data['stats']['comments'] = _parse_stat_static(m.group(1))
+                if data['stats'].get('views', 0) == 0:
+                    m = re.search(r'([\d\.]+[KMB]?)\s+Views?', meta_text, flags)
+                    if m: data['stats']['views'] = _parse_stat_static(m.group(1))
+        except Exception as e:
+            logger.warning(f"Meta tag fallback failed: {e}")
+
+    # Author fallback from meta
+    if not data.get('author'):
+        try:
+            # og:title often has author info
+            og_match = re.search(r'<meta\s+property="og:title"\s+content="(.*?)"', html_content)
+            if og_match:
+                og_title = og_match.group(1)
+                if '(@' in og_title:
+                    author_match = re.search(r'\(@(\w+)\)', og_title)
+                    if author_match:
+                        data['author'] = author_match.group(1)
+        except:
+            pass
+
+    # Thumbnail fallback
+    if not data.get('thumbnail'):
+        try:
+            og_img = re.search(r'<meta\s+property="og:image"\s+content="(.*?)"', html_content)
+            if og_img:
+                data['thumbnail'] = og_img.group(1)
+        except:
+            pass
+
+    # Hashtags from description
+    if not data.get('hashtags') and data.get('description'):
+        data['hashtags'] = re.findall(r"#([^\s\.,!?:;\"'()]+)", data['description'])
+
+    # Ensure stats has all keys
+    if 'stats' not in data:
+        data['stats'] = {'views': 0, 'likes': 0, 'shares': 0, 'comments': 0}
+    for k in ['views', 'likes', 'comments', 'shares']:
+        if k not in data['stats']:
+            data['stats'][k] = 0
+
+    if json_extracted:
+        return data
+    # Even if JSON extraction failed, return what we got from meta if we have description
+    if data.get('description') or data.get('stats', {}).get('likes', 0) > 0:
+        return data
+    return None
+
+
+def _parse_stat_static(text):
+    """Static version of _parse_stat for use outside class"""
+    if not text: return 0
+    text = str(text).strip()
+    text = re.sub(r'\s*(views?|likes?|comments?|shares?)\s*$', '', text, flags=re.IGNORECASE)
+    text = text.upper().replace(',', '').replace(' ', '').strip()
+    if not text: return 0
+    try:
+        multiplier = 1
+        if text.endswith('K'):
+            multiplier = 1000
+            text = text[:-1]
+        elif text.endswith('M'):
+            multiplier = 1000000
+            text = text[:-1]
+        elif text.endswith('B'):
+            multiplier = 1000000000
+            text = text[:-1]
+        return int(float(text) * multiplier)
+    except:
+        return 0
+
+
+async def scrape_video_via_http(url: str) -> Optional[dict]:
+    """
+    Scrape a TikTok video using HTTP requests only (no browser).
+    This avoids CAPTCHA/bot detection entirely.
+    Returns video data dict or None.
+    """
+    logger.info(f"HTTP Scraping: {url}")
+    data = {'url': url}
+
+    try:
+        async with httpx.AsyncClient(
+            headers=_HTTP_HEADERS,
+            follow_redirects=True,
+            timeout=15.0
+        ) as client:
+            # Resolve short URLs via HTTP redirect
+            if 'vm.tiktok.com' in url or 'vt.tiktok.com' in url or '/t/' in url:
+                try:
+                    resp = await client.head(url, follow_redirects=True)
+                    resolved = str(resp.url)
+                    if '/video/' in resolved or '/photo/' in resolved:
+                        logger.info(f"HTTP resolved short URL: {url} -> {resolved}")
+                        url = resolved
+                        data['url'] = url
+                except:
+                    pass
+
+            # Fetch the page HTML
+            resp = await client.get(url)
+            if resp.status_code != 200:
+                logger.warning(f"HTTP {resp.status_code} for {url}")
+                return None
+
+            html = resp.text
+
+            # Check for CAPTCHA/block page
+            if 'verify' in html[:2000].lower() and 'tiktok' in html[:2000].lower() and len(html) < 5000:
+                logger.warning(f"HTTP request returned verify/CAPTCHA page for {url}")
+                # Still try to extract - sometimes the JSON is there even with CAPTCHA overlay
+                pass
+
+            # Extract data from HTML
+            extracted = _extract_json_from_html(html)
+            if extracted:
+                data.update(extracted)
+                logger.info(f"HTTP extraction successful. Views: {data.get('stats', {}).get('views', 'N/A')}, "
+                           f"Likes: {data.get('stats', {}).get('likes', 'N/A')}")
+                return data
+
+            logger.warning(f"HTTP extraction found no data in HTML for {url}")
+            return None
+
+    except Exception as e:
+        logger.error(f"HTTP scrape failed for {url}: {e}")
+        return None
+
+
+async def get_oembed_data(url: str) -> Optional[dict]:
+    """
+    Get basic video metadata from TikTok's public oEmbed API.
+    This is an official API - never blocked.
+    Returns dict with title, author, thumbnail or None.
+    """
+    oembed_url = f"https://www.tiktok.com/oembed?url={urllib.parse.quote(url, safe='')}"
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.get(oembed_url)
+            if resp.status_code == 200:
+                oembed = resp.json()
+                return {
+                    'description': oembed.get('title', ''),
+                    'author': oembed.get('author_name', ''),
+                    'thumbnail': oembed.get('thumbnail_url', ''),
+                    'author_url': oembed.get('author_url', ''),
+                }
+    except Exception as e:
+        logger.warning(f"oEmbed API failed for {url}: {e}")
+    return None
 
 
 def extract_tiktok_id(url: str) -> Optional[str]:
@@ -27,7 +340,16 @@ def extract_tiktok_id(url: str) -> Optional[str]:
         https://www.tiktok.com/@user/video/1234567890 -> 1234567890
     """
     try:
+        # Standard /video/ URL
         match = re.search(r'/video/(\d+)', url)
+        if match:
+            return match.group(1)
+        # Photo/slide URL format
+        match = re.search(r'/photo/(\d+)', url)
+        if match:
+            return match.group(1)
+        # Bare numeric ID at end of URL (e.g. after redirect)
+        match = re.search(r'/(\d{15,})(?:\?|$)', url)
         if match:
             return match.group(1)
         return None
@@ -168,7 +490,7 @@ class TikTokScraper:
              await stealth_async(page)
         except: pass
 
-        encoded_keyword = keyword.replace(" ", "%20")
+        encoded_keyword = urllib.parse.quote(keyword)
         url = f"https://www.tiktok.com/search?q={encoded_keyword}"
         
         print(f"Navigating to {url}")
@@ -218,16 +540,26 @@ class TikTokScraper:
             # Do NOT return here, let it fall through to the fallback!
             
         # Try to find video containers with stats for "Most Engaged" sorting
-        # Search Item Selector: [data-e2e="search_top_item"] or [data-e2e="search_item"]
-        try:
-             # Wait for at least one search item
-             await page.wait_for_selector('[data-e2e="search_card"]', state="attached", timeout=5000)
-        except: pass
+        # TikTok updates selectors frequently - try multiple variants
+        search_card_selectors = [
+            '[data-e2e="search_card"]',
+            '[data-e2e="search-card"]',
+            '[data-e2e="search_top-item"]',
+            '[data-e2e="search-common-link"]',
+            'div[class*="DivItemCardContainer"]',
+            'div[class*="DivVideoCardContainer"]',
+        ]
 
-        # Get all cards
-        # We try broad selection then filter
-        # Common selectors for view count: .video-count, [data-e2e="video-views"]
-        cards = await page.query_selector_all('[data-e2e="search_card"]')
+        cards = []
+        for card_sel in search_card_selectors:
+            try:
+                await page.wait_for_selector(card_sel, state="attached", timeout=3000)
+                cards = await page.query_selector_all(card_sel)
+                if cards:
+                    logger.info(f"Found {len(cards)} cards with selector: {card_sel}")
+                    break
+            except:
+                continue
         
         candidates = []
         
@@ -240,10 +572,21 @@ class TikTokScraper:
                 
                 # 2. Get View Count
                 views = 0
-                # Try multiple selectors for views
-                view_el = await card.query_selector('[data-e2e="video-views"]')
-                if not view_el: view_el = await card.query_selector('.video-count')
-                
+                # Try multiple selectors for views (TikTok changes these frequently)
+                view_selectors = [
+                    '[data-e2e="video-views"]',
+                    '.video-count',
+                    'strong[data-e2e="video-views"]',
+                    'span[class*="SpanOtherInfos"]',
+                    'span[class*="VideoCount"]',
+                    'div[class*="DivPlayCount"]',
+                ]
+                view_el = None
+                for vs in view_selectors:
+                    view_el = await card.query_selector(vs)
+                    if view_el:
+                        break
+
                 if view_el:
                     text = await view_el.inner_text() 
                     # Parse "1.2M", "500K", "100"
@@ -332,429 +675,276 @@ class TikTokScraper:
         await page.close()
         return video_links[:limit]
 
+    async def _resolve_short_url(self, url):
+        """Resolve short/redirect TikTok URLs (vm.tiktok.com, vt.tiktok.com) to full URLs"""
+        if 'vm.tiktok.com' in url or 'vt.tiktok.com' in url or '/t/' in url:
+            try:
+                page = await self.context.new_page()
+                await page.goto(url, wait_until='domcontentloaded', timeout=10000)
+                resolved = page.url
+                await page.close()
+                if '/video/' in resolved or '/photo/' in resolved:
+                    logger.info(f"Resolved short URL: {url} -> {resolved}")
+                    return resolved
+            except Exception as e:
+                logger.warning(f"Failed to resolve short URL {url}: {e}")
+        return url
+
     async def scrape_video_details(self, url):
+        """
+        Scrape video details using a 3-tier strategy:
+        1. HTTP request (fastest, no CAPTCHA)
+        2. oEmbed API (official, never blocked, but limited data)
+        3. Playwright browser (last resort, may hit CAPTCHA)
+        """
         import random
+
+        # ==============================================
+        # TIER 1: HTTP-only scraping (no browser needed)
+        # ==============================================
+        http_data = await scrape_video_via_http(url)
+        if http_data and http_data.get('stats', {}).get('likes', 0) > 0:
+            logger.info(f"TIER 1 (HTTP) succeeded for {url}")
+            # Ensure all required fields
+            http_data.setdefault('comments', [])
+            http_data.setdefault('author', 'Unknown')
+            http_data.setdefault('hashtags', [])
+            http_data.setdefault('screenshot_base64', None)
+            return http_data
+
+        # ==============================================
+        # TIER 2: oEmbed API (always works, limited data)
+        # ==============================================
+        oembed_data = await get_oembed_data(url)
+
+        # If HTTP got stats but no description, merge with oEmbed
+        if http_data and oembed_data:
+            if not http_data.get('description') and oembed_data.get('description'):
+                http_data['description'] = oembed_data['description']
+            if not http_data.get('author') or http_data.get('author') == 'Unknown':
+                http_data['author'] = oembed_data.get('author', http_data.get('author', 'Unknown'))
+            if not http_data.get('thumbnail') and oembed_data.get('thumbnail'):
+                http_data['thumbnail'] = oembed_data['thumbnail']
+            if http_data.get('description') or http_data.get('stats', {}).get('views', 0) > 0:
+                logger.info(f"TIER 1+2 (HTTP+oEmbed merge) succeeded for {url}")
+                http_data.setdefault('comments', [])
+                http_data.setdefault('hashtags', [])
+                http_data.setdefault('screenshot_base64', None)
+                return http_data
+
+        # ==============================================
+        # TIER 3: Playwright browser (last resort)
+        # ==============================================
+        logger.info(f"TIER 3 (Playwright) for {url} - HTTP methods insufficient")
+
+        # Resolve short URLs first
+        url = await self._resolve_short_url(url)
+
         page = await self.context.new_page()
-        print(f"Scraping {url}")
-        
+        print(f"Scraping via browser: {url}")
+
         data = {'url': url}
-        data = {'url': url}
-        max_retries = 1 # Optimized: Faster fail
-        
+
+        # Merge any oEmbed data we already have
+        if oembed_data:
+            data['description'] = oembed_data.get('description', '')
+            data['author'] = oembed_data.get('author', '')
+            data['thumbnail'] = oembed_data.get('thumbnail', '')
+
+        # Merge any HTTP data we already have
+        if http_data:
+            for k, v in http_data.items():
+                if v and k != 'url':
+                    data.setdefault(k, v)
+
+        max_retries = 2
+
         for attempt in range(max_retries + 1):
             try:
                 await page.goto(url)
-                # Optimized: Shorter delay
                 await asyncio.sleep(random.uniform(1, 2))
-                
-                # Handle "Log in to search" Modal - Aggressive Strategy (Same as search)
+
+                # Handle login modal
                 try:
-                    await asyncio.sleep(1) # Optimized
-                    # 1. Try Escape Key
+                    await asyncio.sleep(1)
                     await page.keyboard.press("Escape")
-                    await asyncio.sleep(0.5) 
-                    
-                    # 2. Try clicking the "X" button
+                    await asyncio.sleep(0.5)
                     close_selectors = [
                         '[data-e2e="modal-close-inner-button"]',
                         '[data-e2e="modal-close"]',
                         'button[aria-label="Close"]',
                         'div[role="dialog"] button',
-                        'svg[class*="StyledCloseIcon"]',
-                        '#login-modal-close'
                     ]
                     for selector in close_selectors:
                         if await page.is_visible(selector):
                             await page.click(selector)
                             await asyncio.sleep(0.5)
-                    
-                    # 3. Try clicking outside
                     await page.mouse.click(10, 10)
                 except: pass
 
                 # Wait for load
                 try:
-                    await page.wait_for_load_state('networkidle', timeout=5000) # Optimized: 5s max
-                except: pass
+                    await page.wait_for_load_state('networkidle', timeout=10000)
+                except:
+                    try:
+                        await page.wait_for_load_state('domcontentloaded', timeout=5000)
+                    except: pass
+                    await asyncio.sleep(2)
 
-                # Capture Screenshot for UI
+                # Screenshot
                 import base64
                 screenshot_bytes = await page.screenshot()
                 data['screenshot_base64'] = base64.b64encode(screenshot_bytes).decode('utf-8')
 
-                # Try JSON extraction first
-                import json
-                import re
                 content = await page.content()
-                
-                # Check if we got blocked (simple check)
-                if "verify" in (await page.title()).lower():
-                    print(f"Captcha/Verify detected in title: {await page.title()}")
-                    await asyncio.sleep(5)
-                    continue # Retry
-                
-                break # Success
+
+                # Check for CAPTCHA
+                title = await page.title()
+                if "verify" in title.lower():
+                    print(f"Captcha detected: {title}")
+                    await asyncio.sleep(3)
+                    continue
+
+                # Check for login wall redirect
+                if "Make Your Day" in title or title.strip() == "TikTok" or "Log in" in title:
+                    logger.warning(f"Login wall detected on attempt {attempt}")
+                    if attempt < max_retries:
+                        await asyncio.sleep(2)
+                        continue
+                    else:
+                        # If we have data from HTTP/oEmbed, return that instead of None
+                        if data.get('description') or data.get('stats', {}).get('likes', 0) > 0:
+                            logger.info("Browser blocked but returning HTTP/oEmbed data")
+                            data.setdefault('stats', {'views': 0, 'likes': 0, 'shares': 0, 'comments': 0})
+                            data.setdefault('comments', [])
+                            data.setdefault('hashtags', [])
+                            await page.close()
+                            return data
+                        await page.close()
+                        return None
+
+                # Try extracting from browser page HTML
+                extracted = _extract_json_from_html(content)
+                if extracted:
+                    for k, v in extracted.items():
+                        if v and (k not in data or not data[k]):
+                            data[k] = v
+                    # Merge stats carefully
+                    if 'stats' in extracted:
+                        data.setdefault('stats', {})
+                        for sk, sv in extracted['stats'].items():
+                            if sv and data['stats'].get(sk, 0) == 0:
+                                data['stats'][sk] = sv
+
+                break  # Success
             except Exception as e:
-                print(f"Attempt {attempt} failed: {e}")
+                print(f"Browser attempt {attempt} failed: {e}")
                 if attempt == max_retries:
+                    # Return HTTP/oEmbed data if available
+                    if data.get('description') or data.get('stats', {}).get('likes', 0) > 0:
+                        data.setdefault('stats', {'views': 0, 'likes': 0, 'shares': 0, 'comments': 0})
+                        data.setdefault('comments', [])
+                        data.setdefault('hashtags', [])
+                        await page.close()
+                        return data
                     await page.close()
                     return None
 
-        # ... (JSON Extraction Block - keeping existing logic but ensuring variables exist) ...
-        # I will rewrite the JSON block to be safe
-        
-        try:
-            content = await page.content()
-            sigi_match = re.search(r'<script id="SIGI_STATE" type="application/json">(.*?)</script>', content)
-            if sigi_match:
-                sigi_data = json.loads(sigi_match.group(1))
-                item_module = sigi_data.get('ItemModule', {})
-                for key, item in item_module.items():
-                    data['description'] = item.get('desc', data.get('description', ''))
-                    data['author'] = item.get('author', data.get('author', ''))
-                    stats = item.get('stats', {})
-                    data['stats'] = {
-                        'views': stats.get('playCount', 0),
-                        'likes': stats.get('diggCount', 0),
-                        'shares': stats.get('shareCount', 0),
-                        'comments': stats.get('commentCount', 0)
-                    }
-                    video_info = item.get('video', {})
-                    data['thumbnail'] = video_info.get('cover', '')
-                    challenges = item.get('challenges', [])
-                    data['hashtags'] = [c.get('title') for c in challenges]
-                    break
-            
-            # Universal Data Fallback
-            if 'description' not in data:
-                univ_match = re.search(r'<script id="__UNIVERSAL_DATA_FOR_REHYDRATION__" type="application/json">(.*?)</script>', content)
-                if univ_match:
-                    univ_data = json.loads(univ_match.group(1))
-                    default_scope = univ_data.get('__DEFAULT_SCOPE__', {})
-                    webapp_video_detail = default_scope.get('webapp.video-detail', {})
-                    item_info = webapp_video_detail.get('itemInfo', {}).get('itemStruct', {})
-                    if item_info:
-                        data['description'] = item_info.get('desc', data.get('description', ''))
-                        data['author'] = item_info.get('author', {}).get('nickname', data.get('author', ''))
-                        stats = item_info.get('stats', {})
-                        data['stats'] = {
-                            'views': stats.get('playCount', 0),
-                            'likes': stats.get('diggCount', 0),
-                            'shares': stats.get('shareCount', 0),
-                            'comments': stats.get('commentCount', 0)
-                        }
-                        video_info = item_info.get('video', {})
-                        data['thumbnail'] = video_info.get('cover', '')
-                        challenges = item_info.get('challenges', [])
-                        data['hashtags'] = [c.get('title') for c in challenges]
-
-        except Exception as e:
-            print(f"JSON extraction failed: {e}")
-
-        # --- DOM/META FALLBACKS ---
-        
-        # Description
-        if not data.get('description'):
-            try:
-                # 1. Try Meta Description (Very reliable)
-                meta_desc = await page.query_selector('meta[name="description"]')
-                if meta_desc:
-                    content = await meta_desc.get_attribute('content')
-                    # Clean up "Watch [Author] video..." prefix if present
-                    data['description'] = content.split(' on TikTok')[0]
-                
-                # 2. Try Page Title
-                if not data.get('description'):
-                    title = await page.title()
-                    # DETECT GENERIC PAGE (Login Wall / Home)
-                    if "Make Your Day" in title or title.strip() == "TikTok" or "Log in" in title:
-                        logger.warning(f"⚠️ Redirected to Generic Page (Login/Home). Retrying or Skipping {url}...")
-                        # We can either retry or just return None to skip invalid data
-                        # Let's try to reload once? Or just fail fast.
-                        # For now, FAIL FAST so we don't save garbage.
-                        return None
-                        
-                    # Title format: "Description | Author | TikTok" or similar
-                    if "|" in title:
-                        data['description'] = title.split('|')[0].strip()
-                    else:
-                        data['description'] = title
-
-                # 3. Try DOM
-                if not data.get('description'):
-                    desc_el = await page.query_selector('[data-e2e="browse-video-desc"]')
-                    if not desc_el: desc_el = await page.query_selector('h1')
-                    data['description'] = await desc_el.inner_text() if desc_el else "No description found"
-            except: data['description'] = ""
-
-        # Stats (DOM Fallback)
-        # If JSON failed to find stats, scrape them from UI
-        if 'stats' not in data or data['stats'].get('likes', 0) == 0:
-            dom_stats = {'views': 0, 'likes': 0, 'shares': 0, 'comments': 0}
-            try:
-                # Likes
-                like_el = await page.query_selector('[data-e2e="like-count"]')
-                if like_el: dom_stats['likes'] = self._parse_stat(await like_el.inner_text())
-                
-                # Comments
-                comm_el = await page.query_selector('[data-e2e="comment-count"]')
-                if comm_el: dom_stats['comments'] = self._parse_stat(await comm_el.inner_text())
-                
-                # Shares 
-                # Wait for interaction/stats to load (Critical for DOM scraping)
-                try:
-                    await page.wait_for_selector('[data-e2e="like-count"]', state="visible", timeout=8000)
-                except: 
-                    logger.warning("Timeout waiting for stats selector")
-
-                share_el = await page.query_selector('[data-e2e="share-count"]')
-                if share_el: dom_stats['shares'] = self._parse_stat(await share_el.inner_text())
-                
-                if 'stats' not in data: data['stats'] = {}
-                data['stats'].update(dom_stats)
-            except Exception as e:
-                print(f"DOM stats extraction failed: {e}")
-
-        # Thumbnail
-        if not data.get('thumbnail'):
-            try:
-                # Try OpenGraph Image
-                og_img = await page.query_selector('meta[property="og:image"]')
-                if og_img:
-                    data['thumbnail'] = await og_img.get_attribute('content')
-            except: pass
-
-        # Author
-        if not data.get('author'):
-            try:
-                # Priority: Data Attributes -> H3 -> UniqueID -> Link with @
-                author_selectors = [
-                    '[data-e2e="browse-user-detail"] h3',
-                    '[data-e2e="browse-username"]', 
-                    '[data-e2e="video-author-uniqueid"]',
-                    'a[href^="/@"]',
-                    'h3'
-                ]
-                
-                for sel in author_selectors:
-                    el = await page.query_selector(sel)
-                    if el:
-                        text = await el.inner_text()
-                        if text:
-                             # Cleanup (remove @ if present)
-                             data['author'] = text.replace('@', '').strip()
-                             break
-                
-                if not data.get('author'): data['author'] = "Unknown Author"
-            except: data['author'] = ""
-
-        # Hashtags (DOM Fallback)
-        if 'hashtags' not in data:
-            try:
-                tag_els = await page.query_selector_all('a[href*="/tag/"]')
-                data['hashtags'] = [await t.inner_text() for t in tag_els]
-
-                # 4. Try parsing hashtags from description if empty
-                if not data['hashtags'] and data.get('description'):
-                    import re
-                    data['hashtags'] = re.findall(r"#(\w+)", data['description'])
-            except: data['hashtags'] = []
-
-        # Stats (DOM Fallback)
-        if 'stats' not in data: data['stats'] = {}
-        
-        # Ensure stats dict exists and has defaults
+        # DOM stats fallback (only if browser loaded successfully)
+        if 'stats' not in data:
+            data['stats'] = {'views': 0, 'likes': 0, 'shares': 0, 'comments': 0}
         for k in ['views', 'likes', 'comments', 'shares']:
             if k not in data['stats']: data['stats'][k] = 0
 
-        # NUCLEAR OPTION: Direct JS Evaluation of all data-e2e attributes
-        # This bypasses Playwright's visibility checks and grabs raw text instantly.
         try:
-            # Poll for Stats (up to 6s)
-            found_stats = {}
-            for _ in range(12):
-                found_stats = await page.evaluate("""() => {
-                    const data = {};
-                    const els = document.querySelectorAll('[data-e2e]');
-                    els.forEach(el => {
-                        const attr = el.getAttribute('data-e2e');
-                        // Collect key stats
-                        if (['like-count', 'comment-count', 'share-count', 'video-views'].includes(attr)) {
-                             data[attr] = el.innerText;
-                        }
-                    });
-                    return data;
-                }""")
-                
-                # Check if we have valid data (non-empty)
-                if found_stats.get('comment-count') or found_stats.get('share-count'):
-                    break
-                await asyncio.sleep(0.5)
+            try:
+                await page.wait_for_selector('[data-e2e="like-count"]', state="visible", timeout=5000)
+            except: pass
 
-            # Assign to data
-            if found_stats.get('like-count'): data['stats']['likes'] = self._parse_stat(found_stats['like-count'])
-            if found_stats.get('comment-count'): data['stats']['comments'] = self._parse_stat(found_stats['comment-count'])
-            if found_stats.get('share-count'): data['stats']['shares'] = self._parse_stat(found_stats['share-count'])
-            if found_stats.get('video-views'): data['stats']['views'] = self._parse_stat(found_stats['video-views'])
-
+            stat_selectors = {
+                'views': ['[data-e2e="video-views"]', '[data-e2e="browse-video-count"]'],
+                'likes': ['[data-e2e="like-count"]', '[data-e2e="browse-like-count"]'],
+                'comments': ['[data-e2e="comment-count"]', '[data-e2e="browse-comment-count"]'],
+                'shares': ['[data-e2e="share-count"]', '[data-e2e="browse-share-count"]'],
+            }
+            for stat_key, selectors in stat_selectors.items():
+                if data['stats'].get(stat_key, 0) == 0:
+                    for sel in selectors:
+                        el = await page.query_selector(sel)
+                        if el:
+                            val = self._parse_stat(await el.inner_text())
+                            if val > 0:
+                                data['stats'][stat_key] = val
+                                break
         except Exception as e:
-            print(f"JS Stats extraction error: {e}")
+            logger.warning(f"DOM stats fallback failed: {e}")
 
-        # Comments Text (Scroll and scrape)
-        # Scroll down multiple times to trigger loading
-        for _ in range(3):
-            await page.evaluate("window.scrollBy(0, 800)")
-            await asyncio.sleep(1)
-        
+        # Comment scraping via browser
         comments = []
         try:
-            # Broad selectors for comment CONTAINERS
+            for _ in range(3):
+                await page.evaluate("window.scrollBy(0, 800)")
+                await asyncio.sleep(1)
+
             container_selectors = [
-                 '[data-e2e="comment-level-1"]', 
-                 '[data-e2e="comment-item"]',
-                 'div[class*="DivCommentContentContainer"]',
-                 'div[class*="CommentItem"]',
-                 '.css-1i7ohvi-DivCommentItemContainer'
+                '[data-e2e="comment-level-1"]',
+                '[data-e2e="comment-item"]',
+                'div[class*="CommentItem"]',
             ]
-            
-            comment_elements = []
             for sel in container_selectors:
                 els = await page.query_selector_all(sel)
                 if els:
-                    comment_elements = els
+                    for el in els[:25]:
+                        text_el = await el.query_selector('p[data-e2e="comment-level-1__content"]')
+                        if not text_el: text_el = await el.query_selector('p')
+                        if text_el:
+                            text = await text_el.inner_text()
+                            if len(text) > 1 and "Reply" not in text:
+                                comments.append(text)
                     break
-
-            if comment_elements:
-                # Strategy A: Extract from containers
-                for el in comment_elements[:25]: 
-                    # Try getting text from P or div specific to content
-                    text_el = await el.query_selector('p[data-e2e="comment-level-1__content"]')
-                    if not text_el: text_el = await el.query_selector('[data-e2e="comment-level-1__content"]')
-                    if not text_el: text_el = await el.query_selector('p')
-                    if not text_el: text_el = await el.query_selector('span')
-                    
-                    if text_el:
-                        text = await text_el.inner_text()
-                        if len(text) > 1 and "Reply" not in text:
-                            comments.append(text)
-            else:
-                # Strategy B: Direct Text Element Search (Fallback)
-                # If containers fail, just grab the text paragraphs directly
-                text_els = await page.query_selector_all('[data-e2e="comment-level-1__content"]')
-                for el in text_els[:25]:
-                    text = await el.inner_text()
-                    if len(text) > 1:
-                        comments.append(text)
-
         except Exception as e:
-            print(f"Comment extraction error: {e}")
-        
+            logger.warning(f"Comment extraction failed: {e}")
+
         data['comments'] = comments
 
-        
-        # --- ULTIMATE FALLBACK: Parse Metadata/Description for Stats ---
-        # Often the meta description has: "1.9M Likes, 12.7K Comments. TikTok video from User..."
-        try:
-            desc_text = ""
-            meta_desc = await page.query_selector('meta[name="description"]')
-            if meta_desc:
-                desc_text = await meta_desc.get_attribute('content')
-            elif data.get('description'):
-                desc_text = data['description']
-            
-            if desc_text:
-                import re
-                # Pattern: "1.2M Likes, 30K Comments" - Ensure Case Insensitivity
-                flags = re.IGNORECASE
-                
-                # Likes
-                if data['stats']['likes'] == 0:
-                    likes_match = re.search(r'([\d\.]+([KMB])?)\s+Likes', desc_text, flags)
-                    if likes_match: data['stats']['likes'] = self._parse_stat(likes_match.group(1))
-
-                # Comments - Handle singular/plural
-                if data['stats']['comments'] == 0:
-                    comm_match = re.search(r'([\d\.]+([KMB])?)\s+Comment', desc_text, flags)
-                    if comm_match: data['stats']['comments'] = self._parse_stat(comm_match.group(1))
-                    
-                # Views (sometimes "1.2M Views")
-                if data['stats']['views'] == 0:
-                     views_match = re.search(r'([\d\.]+([KMB])?)\s+View', desc_text, flags)
-                     if views_match: data['stats']['views'] = self._parse_stat(views_match.group(1))
-                     
-                # Shares (Rarely in meta, but checking)
-                if data['stats']['shares'] == 0:
-                     shares_match = re.search(r'([\d\.]+([KMB])?)\s+Share', desc_text, flags)
-                     if shares_match: data['stats']['shares'] = self._parse_stat(shares_match.group(1))
-
-        except Exception as e:
-            print(f"Meta stats fallback failed: {e}")
-
-        # --- STRATEGY C: Scorched Earth Comment Text ---
-        # If we still have 0 comments text, but we know there SHOULD be comments, grab paragraphs.
-        # We also loosen the check: if stats says 0 (because we failed to parse) but we see comment-like text, grab it.
-        if not data['comments']:
-             try:
-                 all_ps = await page.query_selector_all('p')
-                 candidates = []
-                 for p in all_ps[:80]: 
-                     txt = await p.inner_text()
-                     if len(txt) > 3 and len(txt) < 300: 
-                         bad_words = ["Reply", "View more", "Log in", "Follow", "likes", "comments", "share", "TikTok", "Upload", "original sound"]
-                         if not any(bw.lower() in txt.lower() for bw in bad_words):
-                             candidates.append(txt)
-                 data['comments'] = list(set(candidates))[:25] 
-             except: pass
-
-            
-        # Fallback for Author parsing using Description
-        if data.get('author') == "Unknown Author" and desc_text:
-            try:
-                # "TikTok video from Name (@handle)"
-                match_handle = re.search(r'from\s+(.*?)\s+\(@(.*?)\)', desc_text)
-                if match_handle:
-                    data['author'] = match_handle.group(2) # Prefer Handle
-                else:
-                    # Try just "from Name"
-                    match_from = re.search(r'from\s+(.*?)\s*(?::|\()', desc_text)
-                    if match_from: data['author'] = match_from.group(1)
-            except: pass
-
-        # Final Cleanup of Hashtags (Unicode support)
-        if not data.get('hashtags') and data.get('description'):
-            try:
-                # Capture #anything_until_space
-                data['hashtags'] = re.findall(r"#([^\s\.,!?:;\"'()]+)", data['description'])
-            except: pass
-
-        # Final Debug Log
         if data['stats']['comments'] == 0 and len(comments) > 0:
-             # Emergency fill: If we found text, we know count >= len(text)
-             data['stats']['comments'] = len(comments)
+            data['stats']['comments'] = len(comments)
+
+        # Fill missing author
+        if not data.get('author') or data.get('author') == 'Unknown':
+            data['author'] = 'Unknown Author'
+
+        data.setdefault('hashtags', [])
+        if not data.get('hashtags') and data.get('description'):
+            data['hashtags'] = re.findall(r"#([^\s\.,!?:;\"'()]+)", data['description'])
 
         print(f"Scraped Data: {data.get('stats')} | Comments: {len(comments)}")
-
         await page.close()
         return data
 
     def _parse_stat(self, text):
-        """Helper to parse '1.2M', '10K', '100'"""
+        """Helper to parse '1.2M', '10K', '100', '1,234', '1.2k views'"""
         if not text: return 0
-        text = str(text).upper().replace(',', '').strip()
+        text = str(text).strip()
+        # Remove common suffixes like "views", "likes", etc.
+        text = re.sub(r'\s*(views?|likes?|comments?|shares?)\s*$', '', text, flags=re.IGNORECASE)
+        text = text.upper().replace(',', '').replace(' ', '').strip()
+        if not text: return 0
         try:
             multiplier = 1
-            if 'K' in text:
+            if text.endswith('K'):
                 multiplier = 1000
-                text = text.replace('K', '')
-            elif 'M' in text:
+                text = text[:-1]
+            elif text.endswith('M'):
                 multiplier = 1000000
-                text = text.replace('M', '')
-            elif 'B' in text:
+                text = text[:-1]
+            elif text.endswith('B'):
                 multiplier = 1000000000
-                text = text.replace('B', '')
-                
+                text = text[:-1]
+
             return int(float(text) * multiplier)
-        except: return 0
+        except:
+            return 0
 
 async def _save_video_to_db(db_client, video_record, comments):
     """Helper to save video and comments to DB"""
@@ -775,51 +965,104 @@ async def _save_video_to_db(db_client, video_record, comments):
         return None
 
 async def scrape_direct_urls(urls: List[str], db_client: SupabaseClient, scraper: TikTokScraper = None, headless: bool = True) -> Dict[str, Any]:
-    """Scrape specific video URLs directly"""
-    close_scraper = False
-    if not scraper:
-        scraper = TikTokScraper(headless=headless)
-        await scraper.start()
-        close_scraper = True
-
+    """Scrape specific video URLs directly. Tries HTTP first, falls back to browser."""
     scraped_count = 0
     video_ids = []
-    
-    try:
-        for url in urls:
-            logger.info(f"Direct Scraping: {url}")
-            tiktok_id = extract_tiktok_id(url)
+    browser_needed_urls = []
+
+    # PHASE 1: Try HTTP-only scraping for all URLs first (fast, no CAPTCHA)
+    for url in urls:
+        logger.info(f"Direct Scraping (HTTP first): {url}")
+        tiktok_id = extract_tiktok_id(url)
+
+        # Try HTTP
+        video_data = await scrape_video_via_http(url)
+
+        # Enrich with oEmbed
+        if not video_data or not video_data.get('description'):
+            oembed = await get_oembed_data(url)
+            if oembed:
+                if not video_data:
+                    video_data = {'url': url, 'stats': {'views': 0, 'likes': 0, 'shares': 0, 'comments': 0}}
+                video_data.setdefault('description', oembed.get('description', ''))
+                if not video_data.get('author') or video_data.get('author') == 'Unknown':
+                    video_data['author'] = oembed.get('author', 'Unknown')
+                video_data.setdefault('thumbnail', oembed.get('thumbnail', ''))
+
+        if video_data and (video_data.get('stats', {}).get('likes', 0) > 0 or video_data.get('description')):
+            # HTTP success
+            resolved_url = video_data.get('url', url)
             if not tiktok_id:
-                logger.warning(f"Invalid TikTok URL: {url}")
+                tiktok_id = extract_tiktok_id(resolved_url)
+            if not tiktok_id:
+                logger.warning(f"Could not extract TikTok ID from {resolved_url}. Skipping.")
                 continue
-                
-            video_data = await scraper.scrape_video_details(url)
-            if video_data:
-                # Prepare record
-                video_record = {
-                    "tiktok_id": tiktok_id,
-                    "url": url,
-                    "author_username": video_data.get("author", "Unknown"),
-                    "description": video_data.get("description", ""),
-                    "views_count": int(video_data.get("stats", {}).get("views", 0)),
-                    "likes_count": int(video_data.get("stats", {}).get("likes", 0)),
-                    "shares_count": int(video_data.get("stats", {}).get("shares", 0)),
-                    "comments_count": int(video_data.get("stats", {}).get("comments", 0)),
-                    "hashtags": video_data.get("hashtags", []),
-                    "screenshot_base64": video_data.get("screenshot_base64"),
-                    "search_keyword": "Direct Link" # Special keyword
-                }
-                
-                vid_id = await _save_video_to_db(db_client, video_record, video_data.get("comments", []))
-                if vid_id:
-                    scraped_count += 1
-                    video_ids.append(vid_id)
-                    logger.info(f"✅ Saved: {tiktok_id}")
-            
-    finally:
-        if close_scraper:
-            await scraper.stop()
-            
+
+            video_record = {
+                "tiktok_id": tiktok_id,
+                "url": resolved_url,
+                "author_username": video_data.get("author", "Unknown"),
+                "description": video_data.get("description", ""),
+                "views_count": int(video_data.get("stats", {}).get("views", 0)),
+                "likes_count": int(video_data.get("stats", {}).get("likes", 0)),
+                "shares_count": int(video_data.get("stats", {}).get("shares", 0)),
+                "comments_count": int(video_data.get("stats", {}).get("comments", 0)),
+                "hashtags": video_data.get("hashtags", []),
+                "screenshot_base64": video_data.get("screenshot_base64"),
+                "search_keyword": "Direct Link"
+            }
+
+            vid_id = await _save_video_to_db(db_client, video_record, video_data.get("comments", []))
+            if vid_id:
+                scraped_count += 1
+                video_ids.append(vid_id)
+                logger.info(f"Saved (HTTP): {tiktok_id}")
+        else:
+            browser_needed_urls.append(url)
+
+    # PHASE 2: Fall back to browser for URLs that HTTP couldn't handle
+    if browser_needed_urls:
+        logger.info(f"Falling back to browser for {len(browser_needed_urls)} URLs...")
+        close_scraper = False
+        if not scraper:
+            scraper = TikTokScraper(headless=headless)
+            await scraper.start()
+            close_scraper = True
+
+        try:
+            for url in browser_needed_urls:
+                tiktok_id = extract_tiktok_id(url)
+                video_data = await scraper.scrape_video_details(url)
+                if video_data:
+                    resolved_url = video_data.get('url', url)
+                    if not tiktok_id:
+                        tiktok_id = extract_tiktok_id(resolved_url)
+                    if not tiktok_id:
+                        continue
+
+                    video_record = {
+                        "tiktok_id": tiktok_id,
+                        "url": resolved_url,
+                        "author_username": video_data.get("author", "Unknown"),
+                        "description": video_data.get("description", ""),
+                        "views_count": int(video_data.get("stats", {}).get("views", 0)),
+                        "likes_count": int(video_data.get("stats", {}).get("likes", 0)),
+                        "shares_count": int(video_data.get("stats", {}).get("shares", 0)),
+                        "comments_count": int(video_data.get("stats", {}).get("comments", 0)),
+                        "hashtags": video_data.get("hashtags", []),
+                        "screenshot_base64": video_data.get("screenshot_base64"),
+                        "search_keyword": "Direct Link"
+                    }
+
+                    vid_id = await _save_video_to_db(db_client, video_record, video_data.get("comments", []))
+                    if vid_id:
+                        scraped_count += 1
+                        video_ids.append(vid_id)
+                        logger.info(f"Saved (Browser): {tiktok_id}")
+        finally:
+            if close_scraper:
+                await scraper.stop()
+
     return {
         "keyword": "Direct Link",
         "found": len(urls),
@@ -842,33 +1085,53 @@ async def scrape_and_save(keyword: str, max_videos: int, db_client: SupabaseClie
         # Search for videos
         video_urls = await scraper.search_videos(keyword, limit=max_videos)
         
-        # Parallel Processing with Semaphore (Max 3 concurrent tabs to save memory)
-        sem = asyncio.Semaphore(3)
+        # Parallel Processing with Semaphore
+        # HTTP scraping can handle more concurrency than browser
+        sem_http = asyncio.Semaphore(5)
+        sem_browser = asyncio.Semaphore(3)
 
         async def process_video(url):
-            async with sem:
-                tiktok_id = extract_tiktok_id(url)
-                if not tiktok_id: return None
+            tiktok_id = extract_tiktok_id(url)
+            if not tiktok_id: return None
 
-                logger.info(f"Scraping video {tiktok_id}...")
-                video_data = await scraper.scrape_video_details(url)
-                if not video_data: return None
+            # Try HTTP first (no browser needed)
+            async with sem_http:
+                logger.info(f"Scraping video {tiktok_id} (HTTP first)...")
+                video_data = await scrape_video_via_http(url)
 
-                # Prepare record
-                video_record = {
-                    "tiktok_id": tiktok_id,
-                    "url": url,
-                    "author_username": video_data.get("author", "Unknown"),
-                    "description": video_data.get("description", ""),
-                     "views_count": int(video_data.get("stats", {}).get("views", 0)),
-                    "likes_count": int(video_data.get("stats", {}).get("likes", 0)),
-                    "shares_count": int(video_data.get("stats", {}).get("shares", 0)),
-                    "comments_count": int(video_data.get("stats", {}).get("comments", 0)),
-                    "hashtags": video_data.get("hashtags", []),
-                    "screenshot_base64": video_data.get("screenshot_base64"),
-                    "search_keyword": keyword
-                }
-                return (video_record, video_data.get("comments", []))
+                # Enrich with oEmbed if needed
+                if not video_data or not video_data.get('description'):
+                    oembed = await get_oembed_data(url)
+                    if oembed:
+                        if not video_data:
+                            video_data = {'url': url, 'stats': {'views': 0, 'likes': 0, 'shares': 0, 'comments': 0}}
+                        video_data.setdefault('description', oembed.get('description', ''))
+                        if not video_data.get('author') or video_data.get('author') == 'Unknown':
+                            video_data['author'] = oembed.get('author', 'Unknown')
+                        video_data.setdefault('thumbnail', oembed.get('thumbnail', ''))
+
+            # Fall back to browser if HTTP failed
+            if not video_data or (video_data.get('stats', {}).get('likes', 0) == 0 and not video_data.get('description')):
+                async with sem_browser:
+                    logger.info(f"Falling back to browser for {tiktok_id}...")
+                    video_data = await scraper.scrape_video_details(url)
+
+            if not video_data: return None
+
+            video_record = {
+                "tiktok_id": tiktok_id,
+                "url": url,
+                "author_username": video_data.get("author", "Unknown"),
+                "description": video_data.get("description", ""),
+                "views_count": int(video_data.get("stats", {}).get("views", 0)),
+                "likes_count": int(video_data.get("stats", {}).get("likes", 0)),
+                "shares_count": int(video_data.get("stats", {}).get("shares", 0)),
+                "comments_count": int(video_data.get("stats", {}).get("comments", 0)),
+                "hashtags": video_data.get("hashtags", []),
+                "screenshot_base64": video_data.get("screenshot_base64"),
+                "search_keyword": keyword
+            }
+            return (video_record, video_data.get("comments", []))
 
         # Run tasks
         logger.info(f"Parallel scraping started for {len(video_urls)} videos...")
