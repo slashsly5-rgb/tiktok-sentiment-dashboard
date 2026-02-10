@@ -249,10 +249,8 @@ def _parse_stat_static(text):
 async def scrape_video_via_http(url: str) -> Optional[dict]:
     """
     Scrape a TikTok video using HTTP requests only (no browser).
-    Uses multiple strategies:
-    1. TikTok's internal API endpoint (returns JSON directly)
-    2. Googlebot User-Agent (TikTok serves full HTML to search crawlers)
-    3. Standard browser User-Agent
+    Uses multiple strategies including web proxy services to bypass
+    TikTok's datacenter IP blocking.
     Returns video data dict or None.
     """
     logger.info(f"HTTP Scraping: {url}")
@@ -262,7 +260,7 @@ async def scrape_video_via_http(url: str) -> Optional[dict]:
     video_id = extract_tiktok_id(url)
 
     try:
-        async with httpx.AsyncClient(follow_redirects=True, timeout=15.0) as client:
+        async with httpx.AsyncClient(follow_redirects=True, timeout=20.0) as client:
 
             # Resolve short URLs via HTTP redirect
             if 'vm.tiktok.com' in url or 'vt.tiktok.com' in url or '/t/' in url:
@@ -279,7 +277,7 @@ async def scrape_video_via_http(url: str) -> Optional[dict]:
                     pass
 
             # =====================================================
-            # Strategy A: TikTok's internal API (returns JSON directly)
+            # Strategy A: TikTok's internal API
             # =====================================================
             if video_id:
                 try:
@@ -287,52 +285,88 @@ async def scrape_video_via_http(url: str) -> Optional[dict]:
                     api_headers = {**_HTTP_HEADERS, 'Referer': url}
                     resp = await client.get(api_url, headers=api_headers)
                     if resp.status_code == 200:
-                        api_data = resp.json()
-                        item_info = api_data.get('itemInfo', {}).get('itemStruct', None)
-                        if item_info:
-                            extracted = _extract_from_item(item_info)
-                            data.update(extracted)
-                            if data.get('stats', {}).get('likes', 0) > 0 or data.get('stats', {}).get('views', 0) > 0:
-                                logger.info(f"API extraction successful. Views: {data.get('stats', {}).get('views', 'N/A')}")
-                                return data
+                        try:
+                            api_data = resp.json()
+                            item_info = api_data.get('itemInfo', {}).get('itemStruct', None)
+                            if item_info:
+                                extracted = _extract_from_item(item_info)
+                                data.update(extracted)
+                                if data.get('stats', {}).get('likes', 0) > 0 or data.get('stats', {}).get('views', 0) > 0:
+                                    logger.info(f"TikTok API successful. Views: {data.get('stats', {}).get('views', 'N/A')}")
+                                    return data
+                        except json.JSONDecodeError:
+                            logger.warning("TikTok API returned non-JSON response")
                 except Exception as e:
                     logger.warning(f"TikTok API failed: {e}")
 
             # =====================================================
-            # Strategy B: Googlebot User-Agent (gets full SSR HTML)
-            # TikTok serves full page with embedded JSON to search crawlers
+            # Strategy B: Web proxy services (bypass datacenter IP block)
+            # These services fetch TikTok from their own IPs
             # =====================================================
-            bot_headers = {
-                'User-Agent': 'Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)',
-                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-                'Accept-Language': 'en-US,en;q=0.5',
-            }
-            try:
-                resp = await client.get(url, headers=bot_headers)
-                if resp.status_code == 200:
-                    html = resp.text
-                    extracted = _extract_json_from_html(html)
-                    if extracted and (extracted.get('stats', {}).get('likes', 0) > 0 or extracted.get('description')):
-                        data.update(extracted)
-                        logger.info(f"Googlebot extraction successful. Views: {data.get('stats', {}).get('views', 'N/A')}")
-                        return data
-            except Exception as e:
-                logger.warning(f"Googlebot fetch failed: {e}")
+            proxy_urls = [
+                # allorigins - CORS proxy that fetches pages
+                f"https://api.allorigins.win/raw?url={urllib.parse.quote(url, safe='')}",
+                # corsproxy.io
+                f"https://corsproxy.io/?{urllib.parse.quote(url, safe='')}",
+            ]
+
+            for proxy_url in proxy_urls:
+                try:
+                    resp = await client.get(proxy_url, headers={
+                        'User-Agent': _HTTP_HEADERS['User-Agent'],
+                        'Accept': 'text/html,*/*',
+                    }, timeout=15.0)
+                    if resp.status_code == 200 and len(resp.text) > 1000:
+                        html = resp.text
+                        extracted = _extract_json_from_html(html)
+                        if extracted and (extracted.get('stats', {}).get('likes', 0) > 0 or extracted.get('description')):
+                            data.update(extracted)
+                            logger.info(f"Proxy extraction successful via {proxy_url.split('?')[0]}. "
+                                       f"Views: {data.get('stats', {}).get('views', 'N/A')}")
+                            return data
+                except Exception as e:
+                    logger.warning(f"Proxy fetch failed ({proxy_url.split('?')[0]}): {e}")
 
             # =====================================================
-            # Strategy C: Standard browser headers (original approach)
+            # Strategy C: Google Web Cache
+            # Google caches TikTok pages with full data
             # =====================================================
             try:
-                resp = await client.get(url, headers=_HTTP_HEADERS)
-                if resp.status_code == 200:
-                    html = resp.text
-                    extracted = _extract_json_from_html(html)
-                    if extracted:
+                cache_url = f"https://webcache.googleusercontent.com/search?q=cache:{urllib.parse.quote(url, safe='')}"
+                resp = await client.get(cache_url, headers=_HTTP_HEADERS, timeout=10.0)
+                if resp.status_code == 200 and len(resp.text) > 1000:
+                    extracted = _extract_json_from_html(resp.text)
+                    if extracted and (extracted.get('stats', {}).get('likes', 0) > 0 or extracted.get('description')):
                         data.update(extracted)
-                        logger.info(f"Standard HTTP extraction successful. Views: {data.get('stats', {}).get('views', 'N/A')}")
+                        logger.info(f"Google Cache extraction successful. Views: {data.get('stats', {}).get('views', 'N/A')}")
                         return data
             except Exception as e:
-                logger.warning(f"Standard HTTP fetch failed: {e}")
+                logger.warning(f"Google Cache failed: {e}")
+
+            # =====================================================
+            # Strategy D: Direct fetch with various User-Agents
+            # =====================================================
+            ua_variants = [
+                ('Googlebot', 'Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)'),
+                ('Facebookbot', 'facebookexternalhit/1.1 (+http://www.facebook.com/externalhit_uatext.php)'),
+                ('Twitterbot', 'Twitterbot/1.0'),
+                ('WhatsApp', 'WhatsApp/2.23.20.0'),
+                ('Telegram', 'TelegramBot (like TwitterBot)'),
+                ('Standard', _HTTP_HEADERS['User-Agent']),
+            ]
+
+            for ua_name, ua_string in ua_variants:
+                try:
+                    headers = {'User-Agent': ua_string, 'Accept': 'text/html,*/*', 'Accept-Language': 'en-US,en;q=0.9'}
+                    resp = await client.get(url, headers=headers)
+                    if resp.status_code == 200 and len(resp.text) > 5000:
+                        extracted = _extract_json_from_html(resp.text)
+                        if extracted and (extracted.get('stats', {}).get('likes', 0) > 0 or extracted.get('description')):
+                            data.update(extracted)
+                            logger.info(f"{ua_name} UA extraction successful. Views: {data.get('stats', {}).get('views', 'N/A')}")
+                            return data
+                except Exception as e:
+                    logger.warning(f"{ua_name} UA fetch failed: {e}")
 
             logger.warning(f"All HTTP strategies found no data for {url}")
             return None
@@ -348,10 +382,10 @@ async def get_oembed_data(url: str) -> Optional[dict]:
     This is an official API - never blocked.
     Returns dict with title, author, thumbnail or None.
     """
-    # Use safe=':/' to keep URL readable - TikTok's oEmbed expects this
-    oembed_url = f"https://www.tiktok.com/oembed?url={urllib.parse.quote(url, safe=':/@')}"
     try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
+        async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as client:
+            # Try without encoding first (TikTok prefers raw URLs)
+            oembed_url = f"https://www.tiktok.com/oembed?url={url}"
             resp = await client.get(oembed_url)
             if resp.status_code == 200:
                 oembed = resp.json()
@@ -361,8 +395,21 @@ async def get_oembed_data(url: str) -> Optional[dict]:
                     'thumbnail': oembed.get('thumbnail_url', ''),
                     'author_url': oembed.get('author_url', ''),
                 }
-            else:
-                logger.warning(f"oEmbed returned {resp.status_code} for {url}")
+
+            # Fallback: Try with minimal encoding
+            if resp.status_code >= 400:
+                oembed_url = f"https://www.tiktok.com/oembed?url={urllib.parse.quote(url, safe=':/@?=&')}"
+                resp = await client.get(oembed_url)
+                if resp.status_code == 200:
+                    oembed = resp.json()
+                    return {
+                        'description': oembed.get('title', ''),
+                        'author': oembed.get('author_name', ''),
+                        'thumbnail': oembed.get('thumbnail_url', ''),
+                        'author_url': oembed.get('author_url', ''),
+                    }
+
+            logger.warning(f"oEmbed returned {resp.status_code} for {url}")
     except Exception as e:
         logger.warning(f"oEmbed API failed for {url}: {e}")
     return None
