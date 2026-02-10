@@ -97,7 +97,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--keywords", type=str, help="Comma-separated keywords")
     parser.add_argument("--urls", type=str, help="Comma-separated URLs for direct scrape")
-    parser.add_argument("--max-videos", type=int, default=5)
+    parser.add_argument("--max-videos", "--max", type=int, default=5)
     parser.add_argument("--output", type=str, default=None)
     parser.add_argument("--openai_key", type=str, default=None)
     parser.add_argument('--visible', action='store_true')

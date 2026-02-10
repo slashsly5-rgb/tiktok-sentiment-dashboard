@@ -1,0 +1,18 @@
+# Core dependencies
+playwright
+openai
+mistralai
+python-dotenv
+
+# Dashboard
+streamlit
+pandas
+plotly
+
+# Database
+supabase
+psycopg2-binary
+httpx
+websockets
+schedule
+playwright-stealth

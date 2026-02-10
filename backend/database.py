@@ -246,7 +246,11 @@ class SupabaseClient:
                             
                             # Fallback if summary is missing
                             if not video['summary']:
-                                video['summary'] = video['discussion_points']
+                                raw_points = video['discussion_points']
+                                if isinstance(raw_points, list):
+                                    video['summary'] = ", ".join(raw_points)
+                                else:
+                                    video['summary'] = str(raw_points)
                         # Remove the nested object
                         del video['sentiment_analysis']
 

@@ -37,7 +37,7 @@ try:
     st.sidebar.warning(f"🔑 Loaded Key Suffix: ...{suffix}")
     
     # SYSTEM UPGRADE BANNER
-    st.success("✅ **SYSTEM UPDATED v3.1:** Detailed Summarization & Insights Engine Online")
+    st.success("✅ **SYSTEM UPDATED v3.2:** Unified Rendering Engine & Auto-Monitor Parity Online")
 
     if "Is6E" in suffix:
         st.error(f"🚨 ACTIVE KEY IS OLD! Suffix: ...{suffix}. Please Reboot App completely.")
@@ -60,6 +60,140 @@ db = get_database()
 if not db:
     st.error("⚠️ Application could not connect to the database. Please check your Secrets.")
     st.stop()
+
+# Helper Functions for UI
+def fmt_num(n):
+    if not n: return "0"
+    try:
+        ni = int(n)
+        if ni >= 1_000_000: return f"{ni/1_000_000:.1f}M"
+        if ni >= 1_000: return f"{ni/1_000:.1f}K"
+        return str(ni)
+    except:
+        return str(n)
+
+def render_video_card(v, compact=False):
+    # Prepare Data
+    sent = v.get('sentiment', 'Not Analyzed')
+    sent_score = v.get('sentiment_score', 5)
+    
+    # Styling
+    border_color = "#F39C12" # Neutral
+    icon = "😐"
+    bg_light = "#FFF9E6"
+    text_color = "#F39C12"
+    sent_label = "NEUTRAL"
+    cls = "badge-neutral"
+    
+    if "Positive" in str(sent) or sent_score >= 7:
+        border_color = "#2ECC71"
+        icon = "😃"
+        bg_light = "#E8F8F5"
+        text_color = "#2ECC71"
+        sent_label = "POSITIVE"
+        cls = "badge-positive"
+    elif "Negative" in str(sent) or sent_score <= 3:
+        border_color = "#E74C3C"
+        icon = "☹️"
+        bg_light = "#FDEDEC"
+        text_color = "#E74C3C"
+        sent_label = "NEGATIVE"
+        cls = "badge-negative"
+        
+    desc = v.get('description', '')[:120] + "..." if len(v.get('description', '')) > 120 else v.get('description', '')
+    summary = v.get('summary', "No AI summary available.")
+    
+    # Prepare Keyword Tags
+    keywords_html = ""
+    raw_points = v.get('discussion_points', [])
+    points_list = []
+    if isinstance(raw_points, list):
+        points_list = raw_points
+    elif isinstance(raw_points, str):
+        points_list = [x.strip() for x in raw_points.split(',') if x.strip()]
+    
+    for k in points_list[:7]:
+        keywords_html += f'<span style="background:#2C3E50; color:#BDC3C7; padding:2px 6px; border-radius:3px; font-size:9px;">{k}</span>'
+
+    # Prepare Insight Tags
+    pk_issue = v.get('key_issues', [])
+    insight_html = ""
+    if pk_issue and isinstance(pk_issue, list):
+        for issue in pk_issue[:3]:
+             insight_html += f'<span style="background:#FFF3E0; color:#E67E22; padding:3px 8px; border-radius:4px; font-size:10px; font-weight:600; margin-right:4px;">{issue}</span>'
+    else:
+        insight_html = '<span style="background:#f0f0f0; color:#999; padding:3px 8px; border-radius:4px; font-size:10px;">General</span>'
+
+    tiktok_url = f"https://www.tiktok.com/@{v.get('author_username', 'user')}/video/{v.get('tiktok_id', '')}"
+    
+    if compact:
+        # Mini card
+        html = f"""
+        <div class="video-card" style="padding:15px; margin-bottom:10px; border:1px solid #444; background:#262730; border-radius:12px;">
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+                <div style="font-weight:700; font-size:12px; color:#FAFAFA;">
+                    <a href="{tiktok_url}" target="_blank" style="text-decoration:none; color:#FAFAFA; display:flex; align-items:center; gap:4px;">
+                        @{v.get('author_username')} 🔗
+                    </a>
+                </div>
+                <div style="font-size:10px; color:#999;">{sent_score}</div>
+            </div>
+            <div class="badge {cls}" style="font-size:9px;">{sent_label}</div>
+            <div style="width:100%; height:4px; background:#1A1A1A; border-radius:2px; margin-top:8px; overflow:hidden;">
+                <div style="width:{int(sent_score)*10}%; height:100%; background:{border_color};"></div>
+            </div>
+        </div>
+        """
+    else:
+        # Full detailed card
+        html = f"""
+        <div style="background:#262730; border:1px solid #444; border-radius:12px; padding:20px; margin-bottom:20px; box-shadow:0 2px 5px rgba(0,0,0,0.2); height:510px; display:flex; flex-direction:column; position:relative;">
+            <div style="position:absolute; left:0; top:0; bottom:0; width:6px; background:{border_color};"></div>
+            
+            <div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:15px;">
+                <div style="font-weight:700; font-size:14px; color:#FAFAFA;">
+                     <a href="{tiktok_url}" target="_blank" style="text-decoration:none; color:#FAFAFA; display:flex; align-items:center; gap:6px;">
+                        @{v.get('author_username')}
+                        <span style="font-size:12px; opacity:0.7;">🔗</span>
+                    </a>
+                </div>
+                <div class="badge {cls}">{sent_label}</div>
+            </div>
+            
+            <div style="font-size:13px; color:#CCC; margin-bottom:15px; height:60px; overflow:hidden; line-height:1.4;">
+                {desc}
+            </div>
+            
+            <div style="background:#1A1A1A; border:1px solid #333; padding:10px; border-radius:8px; margin-bottom:10px; flex-grow:1; overflow-y:auto;">
+                <div style="font-size:10px; font-weight:700; color:#888; margin-bottom:4px;">PUBLIC REACTION & TOP COMMENTS SUMMARY:</div>
+                <div style="font-size:11px; color:#DDD; line-height:1.4; margin-bottom:8px;">{summary}</div>
+                
+                <div style="border-top:1px solid #333; padding-top:8px;">
+                    <div style="font-size:9px; font-weight:700; color:#666; margin-bottom:4px;">KEYWORDS & SLANG:</div>
+                    <div style="display:flex; flex-wrap:wrap; gap:4px;">
+                        {keywords_html}
+                    </div>
+                </div>
+            </div>
+            
+            <div style="margin-bottom:15px;">
+                 <div style="font-size:10px; font-weight:700; color:#888; margin-bottom:4px;">MAIN TOPICS:</div>
+                 <div style="display:flex; flex-wrap:wrap; gap:4px;">
+                    {insight_html}
+                 </div>
+            </div>
+            
+            <div style="border-top:1px solid #333; padding-top:12px; display:flex; justify-content:space-between; color:#999; font-size:12px;">
+                <span title="Views">👁️ {fmt_num(v.get('views_count',0))}</span>
+                <span title="Likes">❤️ {fmt_num(v.get('likes_count',0))}</span>
+                <span title="Comments">💬 {fmt_num(v.get('comments_count',0))}</span>
+                <span title="Shares">↗️ {fmt_num(v.get('shares_count',0))}</span>
+            </div>
+        </div>
+        """
+    # Process HTML to remove extra whitespace and newlines that can break rendering
+    html = "".join(line.strip() for line in html.split("\n"))
+    st.markdown(html, unsafe_allow_html=True)
 
 # ============================================
 # CSS STYLING (Single Block, No Indentation Issues)
@@ -306,7 +440,7 @@ if db:
     # ============================================
 
     # Main Report Selector (Top of Page)
-    if db and available_reports:
+    if available_reports:
         col_sel, col_info = st.columns([2, 3])
         with col_sel:
             options = ["AGGREGATED OVERVIEW"] + available_reports
@@ -319,7 +453,131 @@ if db:
             else:
                 st.info("Viewing: **AGGREGATED OVERVIEW** (All Data)")
     else:
-        st.warning("Database not connected or no reports available.")
+        st.info("💡 **Welcome!** No reports found in database. Start a scrape below to create your first analysis.")
+
+    # ============================================
+    # SCRAPER INPUT WIDGET (MOVED TO TOP)
+    # ============================================
+    with st.expander("🚀 Start New Analysis (Scrape Videos)", expanded=False):
+            
+        tab_keyword, tab_url = st.tabs(["Keyword Search", "Single Video"])
+        
+        mode = "keyword"
+        target_input = ""
+        max_vids = 5
+        show_browser = False
+        submitted = False
+            
+        # TAB 1: KEYWORD
+        with tab_keyword:
+            with st.form("scrape_form_keyword"):
+                col_k, col_n, col_btn = st.columns([3, 1, 1])
+                with col_k:
+                    k_input = st.text_input("Keyword / Hashtag", placeholder="e.g. #sarawak")
+                with col_n:
+                    count = st.number_input("Max Videos", min_value=1, max_value=50, value=5)
+                with col_btn:
+                    st.markdown("<br>", unsafe_allow_html=True) 
+                    submitted_k = st.form_submit_button("Start Analysis")
+                
+                show_browser_k = st.checkbox("Show Browser (Solve Captchas)", value=False, key="chk_k")
+                
+                if submitted_k:
+                    mode = "keyword"
+                    target_input = k_input
+                    max_vids = count
+                    show_browser = show_browser_k
+                    submitted = True
+
+        # TAB 2: SINGLE VIDEO
+        with tab_url:
+             with st.form("scrape_form_url"):
+                col_u, col_btn_u = st.columns([4, 1])
+                with col_u:
+                    u_input = st.text_input("TikTok Video URL", placeholder="https://www.tiktok.com/@user/video/1234567890")
+                with col_btn_u:
+                    st.markdown("<br>", unsafe_allow_html=True) 
+                    submitted_u = st.form_submit_button("Scrape Video")
+                
+                show_browser_u = st.checkbox("Show Browser (Solve Captchas)", value=False, key="chk_u")
+                
+                if submitted_u:
+                    mode = "url"
+                    target_input = u_input
+                    max_vids = 1 # Single video
+                    show_browser = show_browser_u
+                    submitted = True
+
+        if submitted and target_input:
+            status_box = st.empty()
+                
+            if mode == "keyword":
+                status_box.info(f"⏳ Scraping {max_vids} videos for '{target_input}'... Please wait.")
+                cmd_args = ["--keywords", target_input, "--max", str(max_vids)]
+            else:
+                status_box.info(f"⏳ Scraping Single Video... Please wait.")
+                cmd_args = ["--urls", target_input]
+
+            try:
+                # Run the scraper script as a subprocess
+                import os
+                from pathlib import Path
+                
+                # Get repo root (parent of backend/)
+                repo_root = Path(__file__).resolve().parent.parent
+                backend_dir = repo_root / "backend"
+                scraper_script = backend_dir / "run_scraper_job.py"
+                    
+                base_cmd = [
+                    sys.executable, 
+                    str(scraper_script)
+                ] + cmd_args + [
+                    "--openai_key", Config.OPENAI_API_KEY or ""  # Force explicit key pass
+                ]
+                
+                if show_browser:
+                    base_cmd.append("--visible")
+                
+                cmd = base_cmd # Alias for clarity
+                    
+                # Prepare environment for subprocess
+                env = os.environ.copy()
+                env["SUPABASE_URL"] = Config.SUPABASE_URL or ""
+                env["SUPABASE_SERVICE_ROLE_KEY"] = Config.SUPABASE_SERVICE_ROLE_KEY or ""
+                env["SUPABASE_ANON_KEY"] = Config.SUPABASE_ANON_KEY or ""
+                env["OPENAI_API_KEY"] = Config.OPENAI_API_KEY or ""
+                env["PYTHONPATH"] = str(backend_dir)
+                
+                with st.spinner(f"Running analysis for '{target_input}'... This may take a minute."):
+                    result = subprocess.run(cmd, capture_output=True, text=True, cwd=str(backend_dir), env=env)
+                    
+                    debug_img_path = backend_dir / "search_debug.png"
+                    found_videos = "0 scraped" not in result.stdout and "found: 0" not in result.stdout.lower()
+                    
+                    with st.expander("View Analysis Logs", expanded=not found_videos or result.returncode != 0):
+                        st.code(result.stdout + "\n" + result.stderr)
+                        
+                        if debug_img_path.exists():
+                            st.error("📸 Scraper reached TikTok but may be blocked. Check the screenshot below.")
+                            st.image(str(debug_img_path), caption="What the scraper saw", use_container_width=True)
+                            st.info("💡 TIP: If you see a puzzle captcha, try running with 'Show Browser' checked and solve it manually.")
+
+                    combined_output = result.stdout + "\n" + result.stderr
+                    st.session_state["last_logs"] = combined_output 
+
+                    if result.returncode == 0:
+                        if found_videos:
+                            status_box.success("✅ Analysis Complete! Refreshing dashboard...")
+                            st.cache_data.clear() 
+                            st.cache_resource.clear()
+                            time.sleep(1) 
+                            st.rerun() 
+                        else:
+                            status_box.warning("⚠️ Scraper finished but found 0 videos. See logs/screenshot above.")
+                    else:
+                        status_box.error(f"❌ Error during scrape: Check logs below.")
+            except Exception as e:
+                st.error(f"❌ Execution failed: {e}")
 
 
 
@@ -441,167 +699,8 @@ with st.expander("⚙️ Settings & Maintenance (Reset Database)", expanded=Fals
 
 col_left, col_right = st.columns([6, 4])
 
-# --- LEFT ---
+# --- LEFT COLUMN ---
 with col_left:
-    # SCRAPER INPUT WIDGET
-    with st.expander("🚀 Start New Analysis (Scrape Videos)", expanded=False):
-        
-        tab_keyword, tab_url = st.tabs(["Keyword Search", "Single Video"])
-        
-        mode = "keyword"
-        target_input = ""
-        max_vids = 5
-        show_browser = False
-        submitted = False
-        
-        # TAB 1: KEYWORD
-        with tab_keyword:
-            with st.form("scrape_form_keyword"):
-                col_k, col_n, col_btn = st.columns([3, 1, 1])
-                with col_k:
-                    k_input = st.text_input("Keyword / Hashtag", placeholder="e.g. #sarawak")
-                with col_n:
-                    count = st.number_input("Max Videos", min_value=1, max_value=50, value=5)
-                with col_btn:
-                    st.markdown("<br>", unsafe_allow_html=True) 
-                    submitted_k = st.form_submit_button("Start Analysis")
-                
-                show_browser_k = st.checkbox("Show Browser (Solve Captchas)", value=False, key="chk_k")
-                
-                if submitted_k:
-                    mode = "keyword"
-                    target_input = k_input
-                    max_vids = count
-                    show_browser = show_browser_k
-                    submitted = True
-
-        # TAB 2: SINGLE VIDEO
-        with tab_url:
-             with st.form("scrape_form_url"):
-                col_u, col_btn_u = st.columns([4, 1])
-                with col_u:
-                    u_input = st.text_input("TikTok Video URL", placeholder="https://www.tiktok.com/@user/video/1234567890")
-                with col_btn_u:
-                    st.markdown("<br>", unsafe_allow_html=True) 
-                    submitted_u = st.form_submit_button("Scrape Video")
-                
-                show_browser_u = st.checkbox("Show Browser (Solve Captchas)", value=False, key="chk_u")
-                
-                if submitted_u:
-                    mode = "url"
-                    target_input = u_input
-                    max_vids = 1 # Single video
-                    show_browser = show_browser_u
-                    submitted = True
-
-        if submitted and target_input:
-            status_box = st.empty()
-            
-            if mode == "keyword":
-                status_box.info(f"⏳ Scraping {max_vids} videos for '{target_input}'... Please wait.")
-                cmd_args = ["--keywords", target_input, "--max", str(max_vids)]
-            else:
-                status_box.info(f"⏳ Scraping Single Video... Please wait.")
-                cmd_args = ["--urls", target_input]
-
-            try:
-                # Run the scraper script as a subprocess
-                # Fix: Use absolute path relative to this file to find run_scraper_job.py in root
-                import os
-                from pathlib import Path
-                
-                # Get repo root (parent of backend/)
-                repo_root = Path(__file__).resolve().parent.parent
-                backend_dir = repo_root / "backend"
-                scraper_script = backend_dir / "run_scraper_job.py"
-                
-                base_cmd = [
-                    sys.executable, 
-                    str(scraper_script)
-                ] + cmd_args + [
-                    "--openai_key", Config.OPENAI_API_KEY or ""  # Force explicit key pass
-                ]
-                
-                if show_browser:
-                    base_cmd.append("--visible")
-                
-                cmd = base_cmd # Alias for clarity
-                
-                # Prepare environment for subprocess (Critical for Cloud)
-                # Pass explicit secrets because standalone script can't read st.secrets
-                env = os.environ.copy()
-                env["SUPABASE_URL"] = Config.SUPABASE_URL or ""
-                env["SUPABASE_SERVICE_ROLE_KEY"] = Config.SUPABASE_SERVICE_ROLE_KEY or ""
-                env["SUPABASE_ANON_KEY"] = Config.SUPABASE_ANON_KEY or ""
-                env["OPENAI_API_KEY"] = Config.OPENAI_API_KEY or ""
-                # Also ensure PYTHONPATH includes backend for imports if needed
-                env["PYTHONPATH"] = str(backend_dir)
-                
-                with st.spinner(f"Running analysis for '{target_input}'... This may take a minute."):
-                    # Run in backend dir so imports work
-                    result = subprocess.run(cmd, capture_output=True, text=True, cwd=str(backend_dir), env=env)
-                
-                # Check for debug screenshot from scraper
-                debug_img_path = backend_dir / "search_debug.png"
-                found_videos = "0 scraped" not in result.stdout and "found: 0" not in result.stdout.lower()
-                
-                # Auto-expand logs if issue detected
-                with st.expander("View Analysis Logs", expanded=not found_videos or result.returncode != 0):
-                    st.code(result.stdout + "\n" + result.stderr)
-                    
-                    if debug_img_path.exists():
-                        st.error("📸 Debug Screenshot Captured (Scraper blocked or empty results):")
-                        st.image(str(debug_img_path), caption="What the scraper saw", use_container_width=True)
-
-                # DEBUG: Extract OpenAI Key info from logs to show user
-                combined_output = result.stdout + "\n" + result.stderr
-                st.session_state["last_logs"] = combined_output # PERSIST LOGS
-
-                if "os.environ OPENAI_KEY" in combined_output:
-                    for line in combined_output.split('\n'):
-                        if "DEBUG: os.environ OPENAI_KEY" in line:
-                            st.warning(f"🕵️ Key Check: {line.strip()}")
-
-                if result.returncode == 0:
-                    if found_videos:
-                        status_box.success("✅ Analysis Complete! Refreshing dashboard...")
-                        # Clear cache to ensure new data is fetched
-                        st.cache_data.clear() 
-                        st.cache_resource.clear()
-                        import time
-                        time.sleep(1) # Give DB a moment to settle
-                        st.rerun() 
-                    else:
-                        status_box.warning("⚠️ Scraper finished but found 0 videos. See logs/screenshot above.")
-                    # Filter junk from stderr
-                    cleaned_err = "\n".join([line for line in result.stderr.split('\n') 
-                                           if "[DEP" not in line 
-                                           and "DeprecationWarning" not in line 
-                                           and "(node:" not in line
-                                           and "trace-deprecation" not in line])
-                    
-                    # Logic Check: If the job printed "Job completed", it finished.
-                    # Warnings in stderr should not mask a success.
-                    job_success = "Job completed" in result.stdout
-                    
-                    if job_success:
-                         if found_videos:
-                             status_box.success("✅ Analysis Complete! Refreshing...")
-                         else:
-                             status_box.warning("⚠️ Scraper finished but found 0 videos (Likely blocked). See debug screenshot below.")
-                             
-                         st.cache_data.clear()
-                         st.cache_resource.clear()
-                         import time
-                         time.sleep(1)
-                         if found_videos:
-                             st.rerun()
-                    else:
-                        # Only show error if job actually CRASHED (no completion message)
-                        err_msg = cleaned_err if cleaned_err.strip() else 'Unknown Error (Check Logs)'
-                        status_box.error(f"❌ Error during scrape: {err_msg}")
-            except Exception as e:
-                status_box.error(f"❌ Execution failed: {e}")
 
     # AUTOMATED MONITOR CONFIG WIDGET
     with st.expander("🤖 Automated Monitoring Settings", expanded=False):
@@ -719,40 +818,7 @@ with col_left:
         return str(n)
 
     for v in videos[:3]:
-        sent = v.get('sentiment', 'Not Analyzed')
-        cls = "badge-neutral"
-        if "Positive" in str(sent): cls = "badge-positive"
-        elif "Negative" in str(sent): cls = "badge-negative"
-        
-        desc = v.get('description', '')[:80] + "..." if len(v.get('description', '')) > 80 else v.get('description', '')
-        # summary not needed here since we are compacting it to match screenshot? 
-        # Actually screenshot shows author, score, and desc. No summary box.
-        
-        tiktok_url = f"https://www.tiktok.com/@{v.get('author_username', 'user')}/video/{v.get('tiktok_id', '')}"
-        
-        video_html = f"""
-        <div class="video-card" style="padding:15px; margin-bottom:10px;">
-            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
-                <div style="font-weight:700; font-size:12px; color:#333;">
-                    <a href="{tiktok_url}" target="_blank" style="text-decoration:none; color:#333; display:flex; align-items:center; gap:4px;">
-                        @{v.get('author_username')}
-                        <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#2980B9" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                            <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"></path>
-                            <polyline points="15 3 21 3 21 9"></polyline>
-                            <line x1="10" y1="14" x2="21" y2="3"></line>
-                        </svg>
-                    </a>
-                </div>
-                <div style="font-size:10px; color:#999;">{v.get('sentiment_score', 'N/A')}</div>
-            </div>
-            <div style="font-size:11px; color:#444; margin-bottom:8px;">{cls.replace('badge-','').upper()}</div>
-             <div style="width:100%; height:4px; background:#EEE; border-radius:2px; overflow:hidden;">
-                <div style="width:{int(v.get('sentiment_score', 0))*10}%; height:100%; background:{'#2ECC71' if 'Positive' in str(sent) else '#E74C3C' if 'Negative' in str(sent) else '#F39C12'};"></div>
-            </div>
-        </div>
-        """
-        video_html = "".join(line.strip() for line in video_html.split("\n"))
-        st.markdown(video_html, unsafe_allow_html=True)
+        render_video_card(v, compact=True)
 
     # METRICS ROW
     st.markdown("<br>", unsafe_allow_html=True)
@@ -823,6 +889,7 @@ with col_right:
         </div>
     </div>
     """
+    reach_html = "".join(line.strip() for line in reach_html.split("\n"))
     st.markdown(reach_html, unsafe_allow_html=True)
     
     st.markdown('<div class="dashboard-card">', unsafe_allow_html=True)
@@ -846,98 +913,7 @@ with col_right:
     # Render detailed cards
     if videos:
         for v in videos[:5]:
-            sent_score = v.get('sentiment_score', 5)
-            # Determine style
-            border_color = "#F39C12" # Neutral
-            icon = "😐"
-            bg_light = "#FFF9E6"
-            text_color = "#F39C12"
-            sent_label = "NEUTRAL"
-            
-            if sent_score >= 7:
-                border_color = "#2ECC71"
-                icon = "😃"
-                bg_light = "#E8F8F5"
-                text_color = "#2ECC71"
-                sent_label = "POSITIVE"
-            elif sent_score <= 3:
-                border_color = "#E74C3C"
-                icon = "☹️"
-                bg_light = "#FDEDEC"
-                text_color = "#E74C3C"
-                sent_label = "NEGATIVE"
-                
-            # If summary is missing, fallback to description
-            body_text = v.get('summary')
-            if not body_text or body_text == "N/A":
-                body_text = v.get('description', "No content available.")
-            
-            # Use Topic if available, else username or keyword
-            topic_title = v.get('topic', 'General Topic')
-            if not topic_title or topic_title == "N/A": 
-                topic_title = v.get('search_keyword') or "unknown topic"
-
-            tiktok_url = f"https://www.tiktok.com/@{v.get('author_username', 'user')}/video/{v.get('tiktok_id', '')}"
-            viral_pot = v.get('viral_potential', 'Low')
-            trend_ctx = v.get('trend_context', '')
-            issues_list = v.get('key_issues', [])
-            
-            # Formatting for Viral Badge
-            viral_color = "#95A5A6"
-            if "High" in viral_pot: viral_color = "#E74C3C"
-            elif "Medium" in viral_pot: viral_color = "#F39C12"
-            
-            # Format Insight Tags
-            insight_html = ""
-            if issues_list and isinstance(issues_list, list):
-                for issue in issues_list[:3]:
-                     insight_html += f'<span style="background:#FFF3E0; color:#E67E22; padding:3px 8px; border-radius:4px; font-size:10px; font-weight:600; margin-right:4px;">{issue}</span>'
-            else:
-                 insight_html = '<span style="background:#f0f0f0; color:#999; padding:3px 8px; border-radius:4px; font-size:10px;">General</span>'
-            
-            card_html = f"""
-            <div style="background:#262730; border:1px solid #444; border-radius:12px; padding:20px; margin-bottom:20px; position:relative; overflow:hidden;">
-                <!-- Left Border Stripe -->
-                <div style="position:absolute; left:0; top:0; bottom:0; width:6px; background:{border_color};"></div>
-                
-                <div style="display:flex; align-items:flex-start; margin-bottom:15px;">
-                    <div style="font-size:24px; margin-right:15px; width:30px; text-align:center;">{icon}</div>
-                    <div style="flex-grow:1;">
-                        <div style="display:flex; justify-content:space-between; align-items:start;">
-                            <div style="font-size:16px; font-weight:800; color:#FAFAFA; margin-bottom:4px; text-transform:capitalize; display:flex; align-items:center; gap:8px;">
-                                {topic_title}
-                                <a href="{tiktok_url}" target="_blank" style="font-size:12px; font-weight:400; color:#3498DB; text-decoration:none; background:#1E1E1E; padding:2px 8px; border-radius:10px; border:1px solid #555;">View ↗</a>
-                            </div>
-                            <div style="background:{viral_color}; color:white; padding:2px 8px; border-radius:4px; font-size:9px; font-weight:700; text-transform:uppercase;">
-                                {viral_pot} VIRAL POTENTIAL
-                            </div>
-                        </div>
-                        
-                        <div style="background:#1A1A1A; border:1px solid #333; padding:10px; border-radius:8px; margin-bottom:10px; margin-top:5px;">
-                            <div style="font-size:10px; font-weight:700; color:#888; margin-bottom:4px;">PUBLIC REACTION & INSIGHTS:</div>
-                            <div style="font-size:12px; color:#CCC; line-height:1.5;">{body_text[:500]}</div>
-                        </div>
-                        
-                        <div style="margin-top:10px;">
-                             <div style="font-size:10px; font-weight:700; color:#888; margin-bottom:4px;">MAIN TOPICS:</div>
-                             <div style="display:flex; flex-wrap:wrap; gap:4px;">
-                                {insight_html}
-                             </div>
-                        </div>
-                        
-                        {f'<div style="margin-top:10px; font-size:11px; color:#999; border-left:3px solid #555; padding-left:8px;"><b>Context:</b> {trend_ctx}</div>' if trend_ctx and trend_ctx != "N/A" else ''}
-                    </div>
-                </div>
-                
-                <div style="display:flex; justify-content:flex-end; margin-top:10px;">
-                     <div style="background:{bg_light}; color:{text_color}; padding:4px 12px; border-radius:20px; font-size:10px; font-weight:800; text-transform:uppercase; letter-spacing:1px;">
-                        {sent_label}
-                     </div>
-                </div>
-            </div>
-            """
-            card_html = "".join(line.strip() for line in card_html.split("\n"))
-            st.markdown(card_html, unsafe_allow_html=True)
+            render_video_card(v)
     else:
         st.info("No analysis data available yet. Run a scrape to populate!")
 
@@ -992,75 +968,7 @@ else:
     for idx, v in enumerate(filtered_videos):
         col = cols[idx % 3]
         with col:
-            # Prepare Data
-            sent = v.get('sentiment', 'Not Analyzed')
-            cls = "badge-neutral"
-            if "Positive" in str(sent): cls = "badge-positive"
-            elif "Negative" in str(sent): cls = "badge-negative"
-            
-            desc = v.get('description', '')[:120] + "..." if len(v.get('description', '')) > 120 else v.get('description', '')
-            summary = v.get('summary', "No AI summary available.")
-            pk_issue = v.get('key_issues', [])
-            
-            # Prepare Insight Tags
-            insight_html = ""
-            if pk_issue and isinstance(pk_issue, list):
-                for issue in pk_issue[:3]: # Show top 3
-                     insight_html += f'<span style="background:#FFF3E0; color:#E67E22; padding:3px 8px; border-radius:4px; font-size:10px; font-weight:600; margin-right:4px;">{issue}</span>'
-            else:
-                insight_html = '<span style="background:#f0f0f0; color:#999; padding:3px 8px; border-radius:4px; font-size:10px;">General</span>'
-            
-            tiktok_url = f"https://www.tiktok.com/@{v.get('author_username', 'user')}/video/{v.get('tiktok_id', '')}"
-            
-            grid_html = f"""
-            <div style="background:#262730; border:1px solid #444; border-radius:12px; padding:20px; margin-bottom:20px; box-shadow:0 2px 5px rgba(0,0,0,0.2); height:500px; display:flex; flex-direction:column;">
-                <div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:15px;">
-                    <div style="font-weight:700; font-size:14px; color:#FAFAFA;">
-                         <a href="{tiktok_url}" target="_blank" style="text-decoration:none; color:#FAFAFA; display:flex; align-items:center; gap:6px;">
-                            @{v.get('author_username')}
-                            <span style="font-size:12px; opacity:0.7;">🔗</span>
-                        </a>
-                    </div>
-                    <div class="badge {cls}">{sent.upper()}</div>
-                </div>
-                
-                <div style="font-size:13px; color:#CCC; margin-bottom:15px; flex-grow:0; height:60px; overflow:hidden; line-height:1.4;">
-                    {desc}
-                </div>
-                
-                <div style="background:#1A1A1A; border:1px solid #333; padding:10px; border-radius:8px; margin-bottom:10px; flex-grow:1; overflow-y:auto;">
-                    <div style="font-size:10px; font-weight:700; color:#888; margin-bottom:4px;">PUBLIC REACTION & TOP COMMENTS SUMMARY:</div>
-                    <div style="font-size:11px; color:#DDD; line-height:1.4; margin-bottom:8px;">{summary}</div>
-                    
-                    <div style="border-top:1px solid #333; padding-top:8px;">
-                        <div style="font-size:9px; font-weight:700; color:#666; margin-bottom:4px;">KEYWORDS & SLANG:</div>
-                        <div style="display:flex; flex-wrap:wrap; gap:4px;">
-                            {
-                                (lambda d: ''.join([f'<span style="background:#2C3E50; color:#BDC3C7; padding:2px 6px; border-radius:3px; font-size:9px;">{k.strip()}</span>' 
-                                            for k in (d if isinstance(d, list) else (d.split(',') if isinstance(d, str) else [])) 
-                                            if k and k.strip()][:7]))(v.get('discussion_points', []))
-                            }
-                        </div>
-                    </div>
-                </div>
-                
-                <div style="margin-bottom:15px;">
-                     <div style="font-size:10px; font-weight:700; color:#888; margin-bottom:4px;">MAIN TOPICS:</div>
-                     <div style="display:flex; flex-wrap:wrap; gap:4px;">
-                        {insight_html}
-                     </div>
-                </div>
-                
-                <div style="border-top:1px solid #333; padding-top:12px; display:flex; justify-content:space-between; color:#999; font-size:12px;">
-                    <span title="Views">👁️ {fmt_num(v.get('views_count',0))}</span>
-                    <span title="Likes">❤️ {fmt_num(v.get('likes_count',0))}</span>
-                    <span title="Comments">💬 {fmt_num(v.get('comments_count',0))}</span>
-                    <span title="Shares">↗️ {fmt_num(v.get('shares_count',0))}</span>
-                </div>
-            </div>
-            """
-            grid_html = "".join(line.strip() for line in grid_html.split("\n"))
-            st.markdown(grid_html, unsafe_allow_html=True)
+            render_video_card(v)
 
 # 5. FLOATING CHAT WIDGET
 # ============================================
