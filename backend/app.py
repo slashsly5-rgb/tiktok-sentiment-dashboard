@@ -524,7 +524,15 @@ if db:
                 from pathlib import Path
                 
                 # Get repo root (parent of backend/)
-                repo_root = Path(__file__).resolve().parent.parent
+                import pathlib
+                current_file_path = Path(__file__).resolve()
+                if current_file_path.parent.name == "backend":
+                     # Running directly from backend/app.py
+                     repo_root = current_file_path.parent.parent
+                else:
+                     # Running from root app.py (launcher)
+                     repo_root = current_file_path.parent
+                
                 backend_dir = repo_root / "backend"
                 scraper_script = backend_dir / "run_scraper_job.py"
                     
