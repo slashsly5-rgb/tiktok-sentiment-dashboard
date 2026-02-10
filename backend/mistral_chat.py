@@ -185,17 +185,18 @@ class MistralChatService:
             # --- NEW: RAW COMMENTS CONTEXT ---
             context_parts.append("### Trending Public Comments (Raw Data):")
             try:
-                # Optimized: Get top 20 comments sorted by likes from these videos
+                # Optimized: Get top 60 comments sorted by likes (Increased from 25)
                 comment_query = self.db.supabase.table("comments") \
                     .select("comment_text, likes_count, author_username") \
                     .in_("video_id", video_ids) \
                     .order("likes_count", desc=True) \
-                    .limit(25) # Limit to avoid token overflow
+                    .limit(60) # Increased limit for deeper context
                 
                 raw_comments = comment_query.execute().data
                 
                 if raw_comments:
                     for c in raw_comments:
+                         # Format: "Comment" (Likes: N)
                         context_parts.append(f"- \"{c['comment_text']}\" (Likes: {c['likes_count']})")
                 else:
                     context_parts.append("No specific text comments found in database.")
@@ -210,10 +211,10 @@ class MistralChatService:
             logger.error(f"Error building context: {e}", exc_info=True)
             return f"Error retrieving data: {str(e)}"
 
-    def _truncate_context_if_needed(self, context: str, max_chars: int = 6000) -> str:
+    def _truncate_context_if_needed(self, context: str, max_chars: int = 12000) -> str:
         """
         Truncate context to fit within token limits
-        Mistral Medium has ~32k context window, we use ~6k chars (~1500 tokens) for context
+        Mistral Medium has ~32k context window, we used to use 6k, now increased to 12k for more comments.
         """
         if len(context) <= max_chars:
             return context
@@ -258,38 +259,24 @@ class MistralChatService:
             context = None
             if filters:
                 context = self._build_context_from_filters(filters)
-                context = self._truncate_context_if_needed(context)
+            
+            truncated_context = self._truncate_context_if_needed(context) if context else ""
 
             # Build messages for Mistral
-            messages = []
-
-            # System prompt
-            system_prompt = """You are BUMI, an AI assistant specializing in TikTok political sentiment analysis for Sarawak, Malaysia.
-
-You have access to aggregated sentiment analysis data from TikTok videos, including:
-- AI-generated summaries of video content and comments
-- Specific raw user comments and their engagement levels
-- Key political issues mentioned
-- Discussion topics and trends
-- Sentiment scores and distributions
-
-Your role is to:
-1. Answer questions about sentiment trends, key issues, and public opinion
-2. Provide insights based on the data context provided
-3. Help users understand political sentiment patterns
-4. Be concise, factual, and data-driven
-5. Acknowledge when data is limited or unavailable
-
-When data context is provided, use it to give specific, evidence-based answers. When no context is available, provide general guidance on what could be analyzed."""
-
-            messages.append({"role": "system", "content": system_prompt})
-
-            # Add data context if available
-            if context:
-                messages.append({
-                    "role": "system",
-                    "content": f"Current data context based on user's filter selection:\n\n{context}"
-                })
+            messages = [
+                {
+                    "role": "system", 
+                    "content": (
+                        "You are Bumi, an expert TikTok Sentiment Analyst specializing in public opinion."
+                        "CRITICAL INSTRUCTION: Focus 90% of your analysis on the 'Trending Public Comments' section."
+                        "Ignore hashtags and generic video descriptions unless necessary for context."
+                        "Your goal is to be the 'Voice of the People'. Explain WHAT they are saying and WHY they feel that way."
+                        "Do not just list stats. Interpret the emotions, sarcasm, and specific complaints found in the raw comments."
+                        "If asked about a specific topic, quote real comments from the context to support your answer."
+                    )
+                },
+                {"role": "user", "content": f"Context Data:\n{truncated_context}\n\nUser Question: {user_message}"}
+            ]
 
             # Add conversation history (last N messages)
             history = session["history"][-Config.MAX_CHAT_HISTORY_LENGTH:]
