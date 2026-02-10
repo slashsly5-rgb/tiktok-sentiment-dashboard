@@ -130,13 +130,24 @@ class MistralChatService:
                 f""
             ]
 
-            # Aggregate summaries
-            all_summaries = [s.get("summary") or s.get("discussion_points") for s in sentiments if s.get("summary") or s.get("discussion_points")]
-            if all_summaries:
-                context_parts.append("### AI Summaries:")
-                for i, summary in enumerate(all_summaries[:10], 1):  # Limit to 10
-                    context_parts.append(f"{i}. {summary}")
-                context_parts.append("")
+            # Aggregate summaries with stats
+            video_map = {v['id']: v for v in videos}
+            
+            context_parts.append("### Top Video Summaries (with Views/Comments):")
+            count = 0
+            for s in sentiments:
+                if count >= 15: break
+                summary = s.get("summary") or s.get("discussion_points")
+                if summary:
+                    vid = s.get("video_id")
+                    v_data = video_map.get(vid, {})
+                    views = v_data.get("views_count", 0) or 0
+                    comments = v_data.get("comments_count", 0) or 0
+                    context_parts.append(f"{count+1}. [Views: {views:,} | Comments: {comments:,}] {summary}")
+                    count += 1
+            if count == 0:
+                 context_parts.append("No summaries available.")
+            context_parts.append("")
 
             # Aggregate key issues
             all_issues = []
@@ -272,6 +283,8 @@ class MistralChatService:
                         "Ignore hashtags and generic video descriptions unless necessary for context."
                         "Your goal is to be the 'Voice of the People'. Explain WHAT they are saying and WHY they feel that way."
                         "Do not just list stats. Interpret the emotions, sarcasm, and specific complaints found in the raw comments."
+                        "IMPORTANT: You have access to view counts for each video summary. Use this to gauge public interest."
+                        "If a video has high views, emphasize its impact. NEVER say a video has 'no views' unless the stats literally say 0."
                         "If asked about a specific topic, quote real comments from the context to support your answer."
                     )
                 },
