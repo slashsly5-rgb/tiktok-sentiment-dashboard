@@ -530,4 +530,27 @@ export const fetchVideosWithSentiment = async (days = 30, limit = 50) => {
   }
 }
 
+/**
+ * Scrape and analyze a single TikTok video by URL
+ * This is a synchronous endpoint - it will take 30-60 seconds to complete
+ *
+ * @param {string} url - TikTok video URL
+ * @returns {Promise<Object>} Analysis result with steps and video data
+ */
+export const analyzeSingleVideo = async (url) => {
+  try {
+    const response = await apiClient.post('/api/scrape/single-video', { url }, {
+      timeout: 120000  // 2 minutes - scraping + analysis takes time
+    })
+    return response.data
+  } catch (error) {
+    console.error('Error analyzing single video:', error)
+    if (error.response?.data) {
+      // Return the error response data which may contain partial step results
+      throw { ...error, serverResponse: error.response.data }
+    }
+    throw error
+  }
+}
+
 export default apiClient

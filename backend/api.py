@@ -18,10 +18,14 @@ import logging
 from config import Config
 from database import SupabaseClient
 try:
-    from scraper import scrape_and_save
+    from scraper import scrape_and_save, scrape_video_via_http, get_oembed_data, scrape_video_via_apify, extract_tiktok_id
 except ImportError:
     scrape_and_save = None
-from analyzer import Analyzer
+    scrape_video_via_http = None
+    get_oembed_data = None
+    scrape_video_via_apify = None
+    extract_tiktok_id = None
+from analyzer import Analyzer, analyze_from_database
 from mistral_chat import MistralChatService
 from transform import (
     transform_video,
@@ -1398,6 +1402,696 @@ def clear_chat_endpoint(session_id):
     except Exception as e:
         logger.error(f"Error clearing chat: {e}")
         return jsonify({"error": str(e)}), 500
+
+
+# ============================================
+# Single Video Scrape & Analyze Endpoint
+# ============================================
+
+@app.route('/api/scrape/single-video', methods=['POST'])
+def scrape_single_video():
+    """
+    Synchronous endpoint to scrape and analyze a single TikTok video
+
+    Body:
+        {
+            "url": "https://www.tiktok.com/@user/video/12345"
+        }
+
+    Returns:
+        {
+            "status": "completed" | "failed" | "partial",
+            "video_id": "uuid",
+            "tiktok_id": "12345",
+            "steps": [
+                {"step": 1, "name": "URL Validation", "status": "success", "detail": "...", "duration": 0.02},
+                ...
+            ],
+            "video": { ... complete video data with sentiment ... },
+            "error": "error message if failed"
+        }
+    """
+    import time
+
+    start_time = time.time()
+    steps = []
+    video_id = None
+    tiktok_id = None
+    overall_status = "failed"
+
+    try:
+        # Validate request
+        data = request.get_json(silent=True)
+        if not data or not data.get('url'):
+            return jsonify({
+                "status": "failed",
+                "error": "URL is required in request body"
+            }), 400
+
+        url = data.get('url')
+
+        # Check if scraper functions are available
+        if not all([scrape_video_via_http, get_oembed_data, scrape_video_via_apify, extract_tiktok_id, analyze_from_database]):
+            return jsonify({
+                "status": "failed",
+                "error": "Scraper or analyzer modules not available"
+            }), 503
+
+        if not db:
+            return jsonify({
+                "status": "failed",
+                "error": "Database not available"
+            }), 500
+
+        print("\n" + "="*60)
+        print("[SINGLE-VIDEO] Starting single video scrape and analysis")
+        print("="*60)
+        logger.info(f"[SINGLE-VIDEO] Starting scrape for URL: {url}")
+
+        # ============================
+        # STEP 1: URL Validation
+        # ============================
+        step_start = time.time()
+        step_num = 1
+        step_name = "URL Validation"
+        print(f"\n[SINGLE-VIDEO] {'='*60}")
+        print(f"[SINGLE-VIDEO] STEP {step_num}/8: {step_name}")
+        print(f"[SINGLE-VIDEO] Input URL: {url}")
+        logger.info(f"[SINGLE-VIDEO] STEP {step_num}: {step_name}")
+
+        try:
+            # Validate URL format
+            if not ('tiktok.com' in url or 'vm.tiktok.com' in url or 'vt.tiktok.com' in url):
+                raise ValueError("Invalid TikTok URL format")
+
+            # Extract TikTok ID
+            tiktok_id = extract_tiktok_id(url)
+            if not tiktok_id:
+                # For short URLs, we might not be able to extract ID yet
+                print(f"[SINGLE-VIDEO] Could not extract ID yet (may be short URL)")
+                tiktok_id = None
+            else:
+                print(f"[SINGLE-VIDEO] Extracted TikTok ID: {tiktok_id}")
+
+            step_duration = time.time() - step_start
+            steps.append({
+                "step": step_num,
+                "name": step_name,
+                "status": "success",
+                "detail": f"Extracted TikTok ID: {tiktok_id}" if tiktok_id else "Valid URL format (short URL)",
+                "duration": round(step_duration, 2)
+            })
+            print(f"[SINGLE-VIDEO] STEP {step_num} COMPLETE ({step_duration:.2f}s)")
+            print(f"[SINGLE-VIDEO] {'='*60}")
+
+        except Exception as e:
+            step_duration = time.time() - step_start
+            steps.append({
+                "step": step_num,
+                "name": step_name,
+                "status": "failed",
+                "detail": str(e),
+                "duration": round(step_duration, 2)
+            })
+            print(f"[SINGLE-VIDEO] STEP {step_num} FAILED: {e}")
+            logger.error(f"[SINGLE-VIDEO] URL validation failed: {e}")
+            return jsonify({
+                "status": "failed",
+                "error": str(e),
+                "steps": steps
+            }), 400
+
+        # ============================
+        # STEP 2: Check Existing
+        # ============================
+        step_start = time.time()
+        step_num = 2
+        step_name = "Check Existing"
+        print(f"\n[SINGLE-VIDEO] {'='*60}")
+        print(f"[SINGLE-VIDEO] STEP {step_num}/8: {step_name}")
+        logger.info(f"[SINGLE-VIDEO] STEP {step_num}: {step_name}")
+
+        existing_video = None
+        if tiktok_id:
+            existing_video = db.get_video_by_tiktok_id(tiktok_id)
+            if existing_video:
+                print(f"[SINGLE-VIDEO] Video already exists in DB (ID: {existing_video['id']})")
+                video_id = existing_video['id']
+                step_duration = time.time() - step_start
+                steps.append({
+                    "step": step_num,
+                    "name": step_name,
+                    "status": "exists",
+                    "detail": f"Video already in database (ID: {video_id})",
+                    "duration": round(step_duration, 2)
+                })
+            else:
+                print(f"[SINGLE-VIDEO] Video not found in DB - will scrape new")
+                step_duration = time.time() - step_start
+                steps.append({
+                    "step": step_num,
+                    "name": step_name,
+                    "status": "not_found",
+                    "detail": "New video - will proceed with scraping",
+                    "duration": round(step_duration, 2)
+                })
+        else:
+            print(f"[SINGLE-VIDEO] No TikTok ID yet - cannot check existing")
+            step_duration = time.time() - step_start
+            steps.append({
+                "step": step_num,
+                "name": step_name,
+                "status": "skipped",
+                "detail": "Cannot check without TikTok ID",
+                "duration": round(step_duration, 2)
+            })
+
+        print(f"[SINGLE-VIDEO] STEP {step_num} COMPLETE ({step_duration:.2f}s)")
+        print(f"[SINGLE-VIDEO] {'='*60}")
+
+        # FAST PATH: If video already exists with sentiment, skip scraping
+        if existing_video and video_id:
+            try:
+                sr = db.supabase.table("sentiment_analysis").select("id").eq("video_id", video_id).execute()
+                if sr.data:
+                    print(f"[SINGLE-VIDEO] FAST PATH: Video exists with sentiment - skipping scrape")
+                    # Skip steps 3-7, go straight to returning result
+                    for skip_step, skip_name in [(3, "HTTP Scrape"), (4, "oEmbed Enrich"), (5, "Apify Fallback"), (6, "Save to DB"), (7, "LLM Analysis")]:
+                        steps.append({
+                            "step": skip_step,
+                            "name": skip_name,
+                            "status": "skipped",
+                            "detail": "Video already exists with analysis",
+                            "duration": 0
+                        })
+
+                    # Jump to Step 8
+                    step_start = time.time()
+                    step_num = 8
+                    step_name = "Return Complete Result"
+                    complete_view = db.get_complete_video_view(video_id)
+                    if complete_view:
+                        transformed_view = transform_complete_video_view(complete_view)
+                        flat_video = transformed_view.get("video") or {}
+                        flat_video["sentiment"] = transformed_view.get("sentiment")
+                        flat_video["comments"] = transformed_view.get("comments", [])
+                        flat_video["analysisStats"] = transformed_view.get("stats", {})
+
+                        step_duration = time.time() - step_start
+                        steps.append({
+                            "step": step_num,
+                            "name": step_name,
+                            "status": "success",
+                            "detail": "Returned existing analysis",
+                            "duration": round(step_duration, 2)
+                        })
+
+                        total_duration = time.time() - start_time
+                        print(f"[SINGLE-VIDEO] FAST PATH COMPLETE ({total_duration:.2f}s)")
+                        print("="*60 + "\n")
+
+                        return jsonify({
+                            "status": "completed",
+                            "video_id": video_id,
+                            "tiktok_id": tiktok_id,
+                            "steps": steps,
+                            "video": flat_video,
+                            "total_duration": round(total_duration, 2)
+                        })
+            except Exception as e:
+                print(f"[SINGLE-VIDEO] Fast path check failed, continuing with scrape: {e}")
+
+        # ============================
+        # STEP 3: HTTP Scrape
+        # ============================
+        step_start = time.time()
+        step_num = 3
+        step_name = "HTTP Scrape"
+        print(f"\n[SINGLE-VIDEO] {'='*60}")
+        print(f"[SINGLE-VIDEO] STEP {step_num}/8: {step_name}")
+        logger.info(f"[SINGLE-VIDEO] STEP {step_num}: {step_name}")
+
+        video_data = None
+        try:
+            # Run async function synchronously
+            if sys.platform == 'win32':
+                asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            try:
+                video_data = loop.run_until_complete(scrape_video_via_http(url))
+            finally:
+                loop.close()
+
+            if video_data and (video_data.get('stats', {}).get('likes', 0) > 0 or video_data.get('description')):
+                views = video_data.get('stats', {}).get('views', 0)
+                likes = video_data.get('stats', {}).get('likes', 0)
+                print(f"[SINGLE-VIDEO] HTTP scrape successful: {views:,} views, {likes:,} likes")
+                step_duration = time.time() - step_start
+                steps.append({
+                    "step": step_num,
+                    "name": step_name,
+                    "status": "success",
+                    "detail": f"Got {views:,} views, {likes:,} likes",
+                    "duration": round(step_duration, 2)
+                })
+            else:
+                print(f"[SINGLE-VIDEO] HTTP scrape returned no data")
+                step_duration = time.time() - step_start
+                steps.append({
+                    "step": step_num,
+                    "name": step_name,
+                    "status": "no_data",
+                    "detail": "No data from HTTP scrape",
+                    "duration": round(step_duration, 2)
+                })
+        except Exception as e:
+            print(f"[SINGLE-VIDEO] HTTP scrape failed: {e}")
+            logger.error(f"[SINGLE-VIDEO] HTTP scrape error: {e}")
+            step_duration = time.time() - step_start
+            steps.append({
+                "step": step_num,
+                "name": step_name,
+                "status": "failed",
+                "detail": f"Error: {str(e)[:100]}",
+                "duration": round(step_duration, 2)
+            })
+
+        print(f"[SINGLE-VIDEO] STEP {step_num} COMPLETE ({step_duration:.2f}s)")
+        print(f"[SINGLE-VIDEO] {'='*60}")
+
+        # ============================
+        # STEP 4: oEmbed Enrich
+        # ============================
+        step_start = time.time()
+        step_num = 4
+        step_name = "oEmbed Enrich"
+        print(f"\n[SINGLE-VIDEO] {'='*60}")
+        print(f"[SINGLE-VIDEO] STEP {step_num}/8: {step_name}")
+        logger.info(f"[SINGLE-VIDEO] STEP {step_num}: {step_name}")
+
+        try:
+            # Run async function synchronously
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            try:
+                oembed_data = loop.run_until_complete(get_oembed_data(url))
+            finally:
+                loop.close()
+
+            if oembed_data:
+                # Enrich video_data if we have it
+                if not video_data:
+                    video_data = {'url': url, 'stats': {'views': 0, 'likes': 0, 'shares': 0, 'comments': 0}}
+
+                if not video_data.get('description') and oembed_data.get('description'):
+                    video_data['description'] = oembed_data['description']
+                if not video_data.get('author') or video_data.get('author') == 'Unknown':
+                    video_data['author'] = oembed_data.get('author', 'Unknown')
+                if not video_data.get('thumbnail') and oembed_data.get('thumbnail'):
+                    video_data['thumbnail'] = oembed_data['thumbnail']
+
+                print(f"[SINGLE-VIDEO] oEmbed enriched data successfully")
+                step_duration = time.time() - step_start
+                steps.append({
+                    "step": step_num,
+                    "name": step_name,
+                    "status": "success",
+                    "detail": "Enriched with oEmbed metadata",
+                    "duration": round(step_duration, 2)
+                })
+            else:
+                print(f"[SINGLE-VIDEO] No oEmbed data available")
+                step_duration = time.time() - step_start
+                steps.append({
+                    "step": step_num,
+                    "name": step_name,
+                    "status": "no_data",
+                    "detail": "oEmbed API returned no data",
+                    "duration": round(step_duration, 2)
+                })
+        except Exception as e:
+            print(f"[SINGLE-VIDEO] oEmbed failed: {e}")
+            logger.error(f"[SINGLE-VIDEO] oEmbed error: {e}")
+            step_duration = time.time() - step_start
+            steps.append({
+                "step": step_num,
+                "name": step_name,
+                "status": "failed",
+                "detail": f"Error: {str(e)[:100]}",
+                "duration": round(step_duration, 2)
+            })
+
+        print(f"[SINGLE-VIDEO] STEP {step_num} COMPLETE ({step_duration:.2f}s)")
+        print(f"[SINGLE-VIDEO] {'='*60}")
+
+        # ============================
+        # STEP 5: Apify Fallback
+        # ============================
+        step_start = time.time()
+        step_num = 5
+        step_name = "Apify Fallback"
+        print(f"\n[SINGLE-VIDEO] {'='*60}")
+        print(f"[SINGLE-VIDEO] STEP {step_num}/8: {step_name}")
+        logger.info(f"[SINGLE-VIDEO] STEP {step_num}: {step_name}")
+
+        # Only use Apify if HTTP scrape didn't get good data
+        if not video_data or (video_data.get('stats', {}).get('likes', 0) == 0 and not video_data.get('description')):
+            try:
+                print(f"[SINGLE-VIDEO] Attempting Apify scrape...")
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                try:
+                    apify_data = loop.run_until_complete(scrape_video_via_apify(url))
+                finally:
+                    loop.close()
+
+                if apify_data and (apify_data.get('stats', {}).get('likes', 0) > 0 or apify_data.get('description')):
+                    video_data = apify_data
+                    views = video_data.get('stats', {}).get('views', 0)
+                    likes = video_data.get('stats', {}).get('likes', 0)
+                    print(f"[SINGLE-VIDEO] Apify scrape successful: {views:,} views, {likes:,} likes")
+                    step_duration = time.time() - step_start
+                    steps.append({
+                        "step": step_num,
+                        "name": step_name,
+                        "status": "success",
+                        "detail": f"Got {views:,} views, {likes:,} likes via Apify",
+                        "duration": round(step_duration, 2)
+                    })
+                else:
+                    print(f"[SINGLE-VIDEO] Apify returned no data")
+                    step_duration = time.time() - step_start
+                    steps.append({
+                        "step": step_num,
+                        "name": step_name,
+                        "status": "no_data",
+                        "detail": "Apify returned no usable data",
+                        "duration": round(step_duration, 2)
+                    })
+            except Exception as e:
+                print(f"[SINGLE-VIDEO] Apify scrape failed: {e}")
+                logger.error(f"[SINGLE-VIDEO] Apify error: {e}")
+                step_duration = time.time() - step_start
+                steps.append({
+                    "step": step_num,
+                    "name": step_name,
+                    "status": "failed",
+                    "detail": f"Error: {str(e)[:100]}",
+                    "duration": round(step_duration, 2)
+                })
+        else:
+            print(f"[SINGLE-VIDEO] Skipping Apify - HTTP scrape was successful")
+            step_duration = time.time() - step_start
+            steps.append({
+                "step": step_num,
+                "name": step_name,
+                "status": "skipped",
+                "detail": "HTTP scrape was successful",
+                "duration": round(step_duration, 2)
+            })
+
+        print(f"[SINGLE-VIDEO] STEP {step_num} COMPLETE ({step_duration:.2f}s)")
+        print(f"[SINGLE-VIDEO] {'='*60}")
+
+        # Check if we have any data at all
+        if not video_data:
+            return jsonify({
+                "status": "failed",
+                "error": "Failed to scrape video data from all sources",
+                "steps": steps
+            }), 500
+
+        # ============================
+        # STEP 6: Save to DB
+        # ============================
+        step_start = time.time()
+        step_num = 6
+        step_name = "Save to DB"
+        print(f"\n[SINGLE-VIDEO] {'='*60}")
+        print(f"[SINGLE-VIDEO] STEP {step_num}/8: {step_name}")
+        logger.info(f"[SINGLE-VIDEO] STEP {step_num}: {step_name}")
+
+        try:
+            # Extract TikTok ID if we didn't get it before
+            resolved_url = video_data.get('url', url)
+            if not tiktok_id:
+                tiktok_id = extract_tiktok_id(resolved_url)
+                if not tiktok_id:
+                    raise ValueError(f"Could not extract TikTok ID from {resolved_url}")
+
+            print(f"[SINGLE-VIDEO] Using TikTok ID: {tiktok_id}")
+
+            # Create video record
+            video_record = {
+                "tiktok_id": tiktok_id,
+                "url": resolved_url,
+                "author_username": video_data.get("author", "Unknown"),
+                "description": video_data.get("description", ""),
+                "views_count": int(video_data.get("stats", {}).get("views", 0)),
+                "likes_count": int(video_data.get("stats", {}).get("likes", 0)),
+                "shares_count": int(video_data.get("stats", {}).get("shares", 0)),
+                "comments_count": int(video_data.get("stats", {}).get("comments", 0)),
+                "hashtags": video_data.get("hashtags", []),
+                "screenshot_base64": video_data.get("screenshot_base64"),
+                "search_keyword": "Direct Link - Single Video API"
+            }
+
+            # Check if video exists and update or insert
+            if existing_video:
+                success = db.update_video(video_record)
+                if success:
+                    video_id = existing_video['id']
+                    print(f"[SINGLE-VIDEO] Updated existing video: {video_id}")
+                    step_duration = time.time() - step_start
+                    steps.append({
+                        "step": step_num,
+                        "name": step_name,
+                        "status": "updated",
+                        "detail": f"Updated existing video (ID: {video_id})",
+                        "duration": round(step_duration, 2)
+                    })
+                else:
+                    raise Exception("Failed to update video")
+            else:
+                video_id = db.insert_video(video_record)
+                if video_id:
+                    print(f"[SINGLE-VIDEO] Inserted new video: {video_id}")
+
+                    # Insert comments if we have any
+                    comments = video_data.get("comments", [])
+                    if comments:
+                        comment_records = [
+                            {"author_username": "Unknown", "comment_text": c, "likes_count": 0}
+                            for c in comments
+                        ]
+                        db.insert_comments(video_id, comment_records)
+                        print(f"[SINGLE-VIDEO] Inserted {len(comments)} comments")
+
+                    step_duration = time.time() - step_start
+                    steps.append({
+                        "step": step_num,
+                        "name": step_name,
+                        "status": "success",
+                        "detail": f"Saved video (ID: {video_id}), {len(comments)} comments",
+                        "duration": round(step_duration, 2)
+                    })
+                else:
+                    raise Exception("Failed to insert video")
+
+        except Exception as e:
+            print(f"[SINGLE-VIDEO] DB save failed: {e}")
+            logger.error(f"[SINGLE-VIDEO] DB save error: {e}")
+            step_duration = time.time() - step_start
+            steps.append({
+                "step": step_num,
+                "name": step_name,
+                "status": "failed",
+                "detail": f"Error: {str(e)[:100]}",
+                "duration": round(step_duration, 2)
+            })
+            return jsonify({
+                "status": "failed",
+                "error": f"Failed to save video to database: {e}",
+                "steps": steps
+            }), 500
+
+        print(f"[SINGLE-VIDEO] STEP {step_num} COMPLETE ({step_duration:.2f}s)")
+        print(f"[SINGLE-VIDEO] {'='*60}")
+
+        # ============================
+        # STEP 7: LLM Analysis
+        # ============================
+        step_start = time.time()
+        step_num = 7
+        step_name = "LLM Analysis"
+        print(f"\n[SINGLE-VIDEO] {'='*60}")
+        print(f"[SINGLE-VIDEO] STEP {step_num}/8: {step_name}")
+        logger.info(f"[SINGLE-VIDEO] STEP {step_num}: {step_name}")
+
+        try:
+            # Check if sentiment already exists for this video
+            existing_sentiment = db.get_sentiment_for_video(video_id) if hasattr(db, 'get_sentiment_for_video') else None
+            if not existing_sentiment:
+                # Also check via sentiment_analysis table directly
+                try:
+                    sr = db.supabase.table("sentiment_analysis").select("id,sentiment,sentiment_score").eq("video_id", video_id).execute()
+                    if sr.data:
+                        existing_sentiment = sr.data[0]
+                except Exception:
+                    pass
+
+            if existing_sentiment:
+                sent_val = existing_sentiment.get('sentiment', 'N/A')
+                score_val = existing_sentiment.get('sentiment_score', 'N/A')
+                print(f"[SINGLE-VIDEO] Sentiment already exists: {sent_val} (score: {score_val})")
+                step_duration = time.time() - step_start
+                steps.append({
+                    "step": step_num,
+                    "name": step_name,
+                    "status": "skipped",
+                    "detail": f"Already analyzed: {sent_val}, Score: {score_val}",
+                    "duration": round(step_duration, 2)
+                })
+            else:
+                print(f"[SINGLE-VIDEO] Running sentiment analysis...")
+                analysis = analyze_from_database(video_id, db)
+
+                if analysis:
+                    sentiment = analysis.get('sentiment', 'N/A')
+                    score = analysis.get('score', 'N/A')
+                    print(f"[SINGLE-VIDEO] Analysis complete: {sentiment} (score: {score})")
+                    step_duration = time.time() - step_start
+                    steps.append({
+                        "step": step_num,
+                        "name": step_name,
+                        "status": "success",
+                        "detail": f"Sentiment: {sentiment}, Score: {score}",
+                        "duration": round(step_duration, 2)
+                    })
+                else:
+                    print(f"[SINGLE-VIDEO] Analysis returned no results")
+                    step_duration = time.time() - step_start
+                    steps.append({
+                        "step": step_num,
+                        "name": step_name,
+                        "status": "no_data",
+                        "detail": "Analysis completed but returned no data",
+                        "duration": round(step_duration, 2)
+                    })
+        except Exception as e:
+            print(f"[SINGLE-VIDEO] Analysis failed: {e}")
+            logger.error(f"[SINGLE-VIDEO] Analysis error: {e}")
+            step_duration = time.time() - step_start
+            steps.append({
+                "step": step_num,
+                "name": step_name,
+                "status": "failed",
+                "detail": f"Error: {str(e)[:100]}",
+                "duration": round(step_duration, 2)
+            })
+            # Analysis failure is not critical - continue
+
+        print(f"[SINGLE-VIDEO] STEP {step_num} COMPLETE ({step_duration:.2f}s)")
+        print(f"[SINGLE-VIDEO] {'='*60}")
+
+        # ============================
+        # STEP 8: Return Complete Result
+        # ============================
+        step_start = time.time()
+        step_num = 8
+        step_name = "Return Complete Result"
+        print(f"\n[SINGLE-VIDEO] {'='*60}")
+        print(f"[SINGLE-VIDEO] STEP {step_num}/8: {step_name}")
+        logger.info(f"[SINGLE-VIDEO] STEP {step_num}: {step_name}")
+
+        try:
+            # Fetch complete video view
+            complete_view = db.get_complete_video_view(video_id)
+
+            if complete_view:
+                # Transform to camelCase for frontend
+                transformed_view = transform_complete_video_view(complete_view)
+
+                # Flatten: merge sentiment/comments/stats into the video object
+                # so frontends can access result.video.authorUsername, result.video.sentiment, etc.
+                flat_video = transformed_view.get("video") or {}
+                flat_video["sentiment"] = transformed_view.get("sentiment")
+                flat_video["comments"] = transformed_view.get("comments", [])
+                flat_video["analysisStats"] = transformed_view.get("stats", {})
+
+                step_duration = time.time() - step_start
+                steps.append({
+                    "step": step_num,
+                    "name": step_name,
+                    "status": "success",
+                    "detail": "Complete video data retrieved",
+                    "duration": round(step_duration, 2)
+                })
+
+                overall_status = "completed"
+                total_duration = time.time() - start_time
+
+                print(f"[SINGLE-VIDEO] STEP {step_num} COMPLETE ({step_duration:.2f}s)")
+                print(f"[SINGLE-VIDEO] {'='*60}")
+                print(f"[SINGLE-VIDEO] TOTAL DURATION: {total_duration:.2f}s")
+                print(f"[SINGLE-VIDEO] STATUS: {overall_status}")
+                print("="*60 + "\n")
+                logger.info(f"[SINGLE-VIDEO] Completed successfully in {total_duration:.2f}s")
+
+                return jsonify({
+                    "status": overall_status,
+                    "video_id": video_id,
+                    "tiktok_id": tiktok_id,
+                    "steps": steps,
+                    "video": flat_video,
+                    "total_duration": round(total_duration, 2)
+                })
+            else:
+                raise Exception("Failed to retrieve complete video view")
+
+        except Exception as e:
+            print(f"[SINGLE-VIDEO] Failed to retrieve final data: {e}")
+            logger.error(f"[SINGLE-VIDEO] Final retrieval error: {e}")
+            step_duration = time.time() - step_start
+            steps.append({
+                "step": step_num,
+                "name": step_name,
+                "status": "failed",
+                "detail": f"Error: {str(e)[:100]}",
+                "duration": round(step_duration, 2)
+            })
+
+            overall_status = "partial"
+            total_duration = time.time() - start_time
+
+            print(f"[SINGLE-VIDEO] STEP {step_num} FAILED")
+            print(f"[SINGLE-VIDEO] {'='*60}")
+            print(f"[SINGLE-VIDEO] TOTAL DURATION: {total_duration:.2f}s")
+            print(f"[SINGLE-VIDEO] STATUS: {overall_status}")
+            print("="*60 + "\n")
+
+            return jsonify({
+                "status": overall_status,
+                "video_id": video_id,
+                "tiktok_id": tiktok_id,
+                "steps": steps,
+                "error": str(e),
+                "total_duration": round(total_duration, 2)
+            }), 500
+
+    except Exception as e:
+        total_duration = time.time() - start_time
+        print(f"[SINGLE-VIDEO] CRITICAL ERROR: {e}")
+        print("="*60 + "\n")
+        logger.error(f"[SINGLE-VIDEO] Critical error: {e}", exc_info=True)
+
+        return jsonify({
+            "status": "failed",
+            "error": str(e),
+            "steps": steps,
+            "total_duration": round(total_duration, 2)
+        }), 500
 
 
 # ============================================

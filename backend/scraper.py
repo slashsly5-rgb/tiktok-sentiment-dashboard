@@ -9,9 +9,14 @@ from typing import Optional, List, Dict, Any
 from database import SupabaseClient
 import logging
 
-# Configure logging
-# logging.basicConfig(level=logging.INFO) # REMOVED to avoid conflict
+# Configure logging - ensure output to console
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s | %(levelname)s | %(message)s',
+    datefmt='%H:%M:%S'
+)
 logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
 
 # Shared HTTP headers that mimic a real browser (used for non-Playwright requests)
 _HTTP_HEADERS = {
@@ -447,6 +452,182 @@ def extract_tiktok_id(url: str) -> Optional[str]:
         return None
 
 
+def _parse_apify_response(item: dict, url: str) -> Optional[dict]:
+    """Parse Apify response item into our standard format."""
+    if not item:
+        return None
+
+    # Handle different response formats from different Apify actors
+    extracted = {
+        'url': url,
+        'description': item.get('text', '') or item.get('desc', '') or item.get('description', ''),
+        'author': (
+            item.get('authorMeta', {}).get('name', '') or
+            item.get('author', {}).get('uniqueId', '') or
+            item.get('authorUniqueId', '') or
+            (item.get('author', '') if isinstance(item.get('author'), str) else '')
+        ),
+        'thumbnail': (
+            item.get('videoMeta', {}).get('coverUrl', '') or
+            item.get('video', {}).get('cover', '') or
+            item.get('coverUrl', '')
+        ),
+        'stats': {
+            'views': item.get('playCount', 0) or item.get('stats', {}).get('playCount', 0) or item.get('viewCount', 0),
+            'likes': item.get('diggCount', 0) or item.get('stats', {}).get('diggCount', 0) or item.get('likeCount', 0),
+            'shares': item.get('shareCount', 0) or item.get('stats', {}).get('shareCount', 0),
+            'comments': item.get('commentCount', 0) or item.get('stats', {}).get('commentCount', 0)
+        },
+        'hashtags': [],
+        'comments': []
+    }
+
+    # Parse hashtags from different formats
+    hashtags = item.get('hashtags', []) or item.get('challenges', [])
+    if isinstance(hashtags, list):
+        for h in hashtags:
+            if isinstance(h, dict):
+                extracted['hashtags'].append(h.get('name', '') or h.get('title', ''))
+            elif isinstance(h, str):
+                extracted['hashtags'].append(h)
+
+    return extracted
+
+
+async def search_hashtag_via_apify(keyword: str, limit: int = 10) -> List[str]:
+    """
+    Search TikTok hashtag/keyword using Apify when browser is blocked.
+    Returns list of video URLs.
+    """
+    from config import Config
+
+    if not Config.APIFY_TASK_URL_FALLBACK:
+        logger.warning("Apify hashtag search skipped: No APIFY_TASK_URL_FALLBACK configured")
+        return []
+
+    # Clean keyword for hashtag format
+    tag = keyword.replace(" ", "").replace("#", "")
+    hashtag_url = f"https://www.tiktok.com/tag/{tag}"
+
+    print(f"  [APIFY] Hashtag search: #{tag}")
+    logger.info(f"Apify HASHTAG SEARCH: Searching for #{tag} via Apify")
+
+    try:
+        async with httpx.AsyncClient(timeout=120.0) as client:
+            # Use the fallback scraper which supports hashtag URLs
+            payload = {
+                "startUrls": [{"url": hashtag_url}],
+                "maxItems": limit,
+                "hashtags": [tag],
+            }
+
+            response = await client.post(Config.APIFY_TASK_URL_FALLBACK, json=payload)
+
+            if response.status_code == 201:
+                items = response.json()
+                if isinstance(items, list) and len(items) > 0:
+                    video_urls = []
+                    for item in items:
+                        # Extract video URL from Apify response
+                        video_url = item.get('webVideoUrl') or item.get('url') or item.get('videoUrl')
+                        if video_url and '/video/' in video_url:
+                            video_urls.append(video_url)
+                    print(f"  [APIFY] SUCCESS: Found {len(video_urls)} videos for #{tag}")
+                    logger.info(f"Apify hashtag search found {len(video_urls)} videos for #{tag}")
+                    return video_urls[:limit]
+                else:
+                    print(f"  [APIFY] WARNING: No videos returned for #{tag}")
+                    logger.warning(f"Apify hashtag search returned empty for #{tag}")
+            else:
+                print(f"  [APIFY] FAILED: Status {response.status_code}")
+                logger.warning(f"Apify hashtag search failed: {response.status_code}")
+
+    except Exception as e:
+        logger.error(f"Apify hashtag search error: {e}")
+
+    return []
+
+
+async def scrape_video_via_apify(url: str) -> Optional[dict]:
+    """
+    Scrape TikTok video using Apify.
+    Tries PRIMARY scraper first (cheaper), falls back to FALLBACK scraper.
+    """
+    from config import Config
+
+    if not Config.APIFY_TASK_URL_PRIMARY and not Config.APIFY_TASK_URL_FALLBACK:
+        logger.warning("Apify skipped: No APIFY_TASK_URL configured")
+        return None
+
+    # === TIER 1: Primary Apify Scraper (tiktok-video-scraper-task - cheaper) ===
+    if Config.APIFY_TASK_URL_PRIMARY:
+        logger.info(f"Apify PRIMARY: Triggering for {url}")
+        try:
+            async with httpx.AsyncClient(timeout=90.0) as client:
+                # Primary scraper uses postURLs format
+                payload = {
+                    "postURLs": [url],
+                    "resultsPerPage": 1,
+                    "scrapeRelatedVideos": False,
+                    "shouldDownloadCovers": False,
+                    "shouldDownloadSlideshowImages": False,
+                    "shouldDownloadSubtitles": False,
+                    "shouldDownloadVideos": False
+                }
+
+                response = await client.post(Config.APIFY_TASK_URL_PRIMARY, json=payload)
+
+                if response.status_code == 201:
+                    items = response.json()
+                    if isinstance(items, list) and len(items) > 0:
+                        extracted = _parse_apify_response(items[0], url)
+                        if extracted and (extracted['stats']['views'] > 0 or extracted['description']):
+                            logger.info(f"Apify PRIMARY success. Views: {extracted['stats']['views']}")
+                            return extracted
+                        else:
+                            logger.warning("Apify PRIMARY returned item but no usable data")
+                    else:
+                        logger.warning("Apify PRIMARY returned success but no items")
+                else:
+                    logger.warning(f"Apify PRIMARY failed: {response.status_code} - {response.text[:200]}")
+
+        except Exception as e:
+            logger.error(f"Apify PRIMARY error: {e}")
+
+    # === TIER 2: Fallback Apify Scraper (tiktok-scraper-task - more expensive) ===
+    if Config.APIFY_TASK_URL_FALLBACK:
+        logger.info(f"Apify FALLBACK: Triggering for {url}")
+        try:
+            async with httpx.AsyncClient(timeout=90.0) as client:
+                # Fallback scraper uses startUrls format
+                payload = {
+                    "startUrls": [{"url": url}],
+                    "maxItems": 1
+                }
+
+                response = await client.post(Config.APIFY_TASK_URL_FALLBACK, json=payload)
+
+                if response.status_code == 201:
+                    items = response.json()
+                    if isinstance(items, list) and len(items) > 0:
+                        extracted = _parse_apify_response(items[0], url)
+                        if extracted and (extracted['stats']['views'] > 0 or extracted['description']):
+                            logger.info(f"Apify FALLBACK success. Views: {extracted['stats']['views']}")
+                            return extracted
+                        else:
+                            logger.warning("Apify FALLBACK returned item but no usable data")
+                    else:
+                        logger.warning("Apify FALLBACK returned success but no items")
+                else:
+                    logger.warning(f"Apify FALLBACK failed: {response.status_code} - {response.text[:200]}")
+
+        except Exception as e:
+            logger.error(f"Apify FALLBACK error: {e}")
+
+    logger.error(f"All Apify scrapers failed for {url}")
+    return None
+
+
 class TikTokScraper:
     def __init__(self, headless=False):
         self.headless = headless
@@ -584,10 +765,33 @@ class TikTokScraper:
         
         print(f"Navigating to {url}")
         await page.goto(url)
-        
+
+        # Early CAPTCHA detection - fail fast to Apify
+        await asyncio.sleep(2)
+        content = await page.content()
+        captcha_indicators = [
+            "Drag the slider",
+            "fit the puzzle",
+            "Verify to continue",
+            "tiktok-verify",
+            "secsdk-captcha",
+        ]
+        if any(ind.lower() in content.lower() for ind in captcha_indicators):
+            print("\n" + "="*60)
+            print("  [!] CAPTCHA DETECTED - FALLING BACK TO APIFY")
+            print("="*60)
+            logger.warning(f"CAPTCHA blocked search for '{keyword}' on first load. Using Apify fallback.")
+            await page.screenshot(path="search_captcha_early.png")
+            await page.close()
+            apify_urls = await search_hashtag_via_apify(keyword, limit)
+            if apify_urls:
+                print(f"Apify found {len(apify_urls)} videos for '{keyword}'")
+                return apify_urls
+            return []
+
         # Handle "Log in to search" Modal - Aggressive Strategy
         try:
-            await asyncio.sleep(3) # Wait for modal to fully render
+            await asyncio.sleep(1) # Wait for modal to fully render
             
             # 1. Try Escape Key (Most robust)
             print("Trying Escape key...")
@@ -757,10 +961,40 @@ class TikTokScraper:
             except Exception as e:
                 print(f"Hashtag fallback failed: {e}")
 
+        # --- CAPTCHA DETECTION & APIFY FALLBACK ---
         if not video_links:
+            # Check for CAPTCHA indicators in current page
+            content = await page.content()
+            captcha_indicators = [
+                "Drag the slider",
+                "fit the puzzle",
+                "Verify to continue",
+                "captcha",
+                "tiktok-verify",
+                "secsdk-captcha",
+            ]
+            captcha_detected = any(ind.lower() in content.lower() for ind in captcha_indicators)
+
+            if captcha_detected:
+                print("\n" + "="*60)
+                print("  [!] CAPTCHA DETECTED - FALLING BACK TO APIFY")
+                print("="*60)
+                logger.warning(f"CAPTCHA blocked search for '{keyword}'. Using Apify fallback.")
+                await page.screenshot(path="search_captcha_debug.png")
+                await page.close()
+
+                # Use Apify for hashtag search
+                apify_urls = await search_hashtag_via_apify(keyword, limit)
+                if apify_urls:
+                    print(f"Apify found {len(apify_urls)} videos for '{keyword}'")
+                    return apify_urls
+                else:
+                    print("Apify hashtag search also returned no results")
+                    return []
+
             print("No videos found after fallback, taking debug screenshot...")
             await page.screenshot(path="search_debug.png")
-            
+
         await page.close()
         return video_links[:limit]
 
@@ -887,12 +1121,53 @@ class TikTokScraper:
 
                 content = await page.content()
 
-                # Check for CAPTCHA
+                # Check for CAPTCHA - detect multiple types
                 title = await page.title()
+                captcha_detected = False
+
+                # Title-based detection
                 if "verify" in title.lower():
-                    print(f"Captcha detected: {title}")
-                    await asyncio.sleep(3)
-                    continue
+                    print(f"  [!] Captcha detected (title): {title}")
+                    captcha_detected = True
+
+                # Content-based CAPTCHA detection (slider puzzle, etc.)
+                captcha_indicators = [
+                    "Drag the slider",
+                    "fit the puzzle",
+                    "Verify to continue",
+                    "captcha",
+                    "tiktok-verify",
+                    "secsdk-captcha",
+                ]
+                content_lower = content.lower()
+                for indicator in captcha_indicators:
+                    if indicator.lower() in content_lower:
+                        print(f"  [!] Captcha detected (content): '{indicator}' found")
+                        captcha_detected = True
+                        break
+
+                if captcha_detected:
+                    if attempt < max_retries:
+                        print(f"  [!] Retrying... (attempt {attempt + 1}/{max_retries})")
+                        await asyncio.sleep(3)
+                        continue
+                    else:
+                        # CAPTCHA after max retries - trigger Apify fallback immediately
+                        print("\n" + "="*60)
+                        print("  [!] CAPTCHA AFTER MAX RETRIES - APIFY FALLBACK")
+                        print("="*60)
+                        logger.warning(f"CAPTCHA detected after max retries. Triggering Apify fallback for {url}")
+                        await page.close()
+                        apify_data = await scrape_video_via_apify(url)
+                        if apify_data:
+                            return apify_data
+                        # Return partial data if Apify also fails
+                        if data.get('description') or data.get('stats', {}).get('likes', 0) > 0:
+                            data.setdefault('stats', {'views': 0, 'likes': 0, 'shares': 0, 'comments': 0})
+                            data.setdefault('comments', [])
+                            data.setdefault('hashtags', [])
+                            return data
+                        return None
 
                 # Check for login wall redirect
                 if "Make Your Day" in title or title.strip() == "TikTok" or "Log in" in title:
@@ -909,7 +1184,11 @@ class TikTokScraper:
                             data.setdefault('hashtags', [])
                             await page.close()
                             return data
+                        
+                        logger.info(f"Browser login wall blocked. Attempting Apify fallback for {url}")
                         await page.close()
+                        apify_data = await scrape_video_via_apify(url)
+                        if apify_data: return apify_data
                         return None
 
                 # Try extracting from browser page HTML
@@ -936,7 +1215,11 @@ class TikTokScraper:
                         data.setdefault('hashtags', [])
                         await page.close()
                         return data
+                    
+                    logger.info(f"Browser scraping failed with exception. Attempting Apify fallback for {url}")
                     await page.close()
+                    apify_data = await scrape_video_via_apify(url)
+                    if apify_data: return apify_data
                     return None
 
         # DOM stats fallback (only if browser loaded successfully)
@@ -1008,6 +1291,18 @@ class TikTokScraper:
             data['hashtags'] = re.findall(r"#([^\s\.,!?:;\"'()]+)", data['description'])
 
         print(f"Scraped Data: {data.get('stats')} | Comments: {len(comments)}")
+
+        # ==============================================
+        # TIER 4: Apify Scraper (Final Fallback)
+        # ==============================================
+        if not data.get('description') and data.get('stats', {}).get('likes', 0) == 0:
+             logger.info(f"TIER 3 (Browser) yielded insufficient data. Attempting TIER 4 (Apify) for {url}")
+             await page.close()
+             apify_data = await scrape_video_via_apify(url)
+             if apify_data:
+                 return apify_data
+             return data
+
         await page.close()
         return data
 
@@ -1054,21 +1349,33 @@ async def _save_video_to_db(db_client, video_record, comments):
         return None
 
 async def scrape_direct_urls(urls: List[str], db_client: SupabaseClient, scraper: TikTokScraper = None, headless: bool = True) -> Dict[str, Any]:
-    """Scrape specific video URLs directly. Tries HTTP first, falls back to browser."""
+    """Scrape specific video URLs directly. Tries HTTP first, falls back to browser for comments."""
     scraped_count = 0
     video_ids = []
     browser_needed_urls = []
+    newly_scraped_ids = []  # Track newly scraped video IDs for highlighting
+
+    print("\n" + "-"*60)
+    print("  PHASE 1: SCRAPING VIDEO DATA")
+    print("-"*60)
+    print(f"  Target: {len(urls)} video(s)")
+    print("-"*60)
 
     # PHASE 1: Try HTTP-only scraping for all URLs first (fast, no CAPTCHA)
-    for url in urls:
+    for idx, url in enumerate(urls, 1):
+        print(f"\n  [{idx}/{len(urls)}] Processing URL...")
+        print(f"       URL: {url[:70]}{'...' if len(url) > 70 else ''}")
         logger.info(f"Direct Scraping (HTTP first): {url}")
         tiktok_id = extract_tiktok_id(url)
+        print(f"       Video ID: {tiktok_id or 'Could not extract'}")
 
         # Try HTTP
+        print(f"       [1/3] Attempting HTTP scrape...")
         video_data = await scrape_video_via_http(url)
 
         # Enrich with oEmbed
         if not video_data or not video_data.get('description'):
+            print(f"       [2/3] HTTP incomplete, trying oEmbed API...")
             oembed = await get_oembed_data(url)
             if oembed:
                 if not video_data:
@@ -1077,40 +1384,73 @@ async def scrape_direct_urls(urls: List[str], db_client: SupabaseClient, scraper
                 if not video_data.get('author') or video_data.get('author') == 'Unknown':
                     video_data['author'] = oembed.get('author', 'Unknown')
                 video_data.setdefault('thumbnail', oembed.get('thumbnail', ''))
+                print(f"       [OK] oEmbed enriched data")
 
-        if video_data and (video_data.get('stats', {}).get('likes', 0) > 0 or video_data.get('description')):
-            # HTTP success
-            resolved_url = video_data.get('url', url)
-            if not tiktok_id:
-                tiktok_id = extract_tiktok_id(resolved_url)
-            if not tiktok_id:
-                logger.warning(f"Could not extract TikTok ID from {resolved_url}. Skipping.")
-                continue
-
-            video_record = {
-                "tiktok_id": tiktok_id,
-                "url": resolved_url,
-                "author_username": video_data.get("author", "Unknown"),
-                "description": video_data.get("description", ""),
-                "views_count": int(video_data.get("stats", {}).get("views", 0)),
-                "likes_count": int(video_data.get("stats", {}).get("likes", 0)),
-                "shares_count": int(video_data.get("stats", {}).get("shares", 0)),
-                "comments_count": int(video_data.get("stats", {}).get("comments", 0)),
-                "hashtags": video_data.get("hashtags", []),
-                "screenshot_base64": video_data.get("screenshot_base64"),
-                "search_keyword": "Direct Link"
-            }
-
-            vid_id = await _save_video_to_db(db_client, video_record, video_data.get("comments", []))
-            if vid_id:
-                scraped_count += 1
-                video_ids.append(vid_id)
-                logger.info(f"Saved (HTTP): {tiktok_id}")
+        # Log HTTP results (with safe encoding for Windows console)
+        if video_data:
+            stats = video_data.get('stats', {})
+            print(f"       [OK] HTTP Result:")
+            # Safe encode for Windows console (replace non-ASCII chars)
+            author = video_data.get('author', 'Unknown') or 'Unknown'
+            safe_author = author.encode('ascii', 'replace').decode('ascii')
+            print(f"            Author: {safe_author}")
+            print(f"            Views: {stats.get('views', 0):,} | Likes: {stats.get('likes', 0):,}")
+            desc = video_data.get('description', '') or ''
+            safe_desc = desc[:60].encode('ascii', 'replace').decode('ascii')
+            print(f"            Description: {safe_desc}{'...' if len(desc) > 60 else ''}")
         else:
+            print(f"       [!] HTTP scrape returned no data")
+
+        # CRITICAL FIX: Even if HTTP got metadata, we NEED browser scraping for comments
+        # HTTP scraping NEVER returns comments - only browser scraping does
+        if video_data and (video_data.get('stats', {}).get('likes', 0) > 0 or video_data.get('description')):
+            # HTTP got basic metadata, but check if we have comments
+            comments = video_data.get('comments', [])
+            if not comments or len(comments) == 0:
+                print(f"       [!] No comments from HTTP - will use browser scraping")
+                logger.info(f"HTTP got metadata but no comments for {url}. Will use browser to fetch comments.")
+                browser_needed_urls.append(url)
+            else:
+                # We have both metadata AND comments (unlikely from HTTP alone)
+                resolved_url = video_data.get('url', url)
+                if not tiktok_id:
+                    tiktok_id = extract_tiktok_id(resolved_url)
+                if not tiktok_id:
+                    logger.warning(f"Could not extract TikTok ID from {resolved_url}. Skipping.")
+                    continue
+
+                video_record = {
+                    "tiktok_id": tiktok_id,
+                    "url": resolved_url,
+                    "author_username": video_data.get("author", "Unknown"),
+                    "description": video_data.get("description", ""),
+                    "views_count": int(video_data.get("stats", {}).get("views", 0)),
+                    "likes_count": int(video_data.get("stats", {}).get("likes", 0)),
+                    "shares_count": int(video_data.get("stats", {}).get("shares", 0)),
+                    "comments_count": int(video_data.get("stats", {}).get("comments", 0)),
+                    "hashtags": video_data.get("hashtags", []),
+                    "screenshot_base64": video_data.get("screenshot_base64"),
+                    "search_keyword": "Direct Link"
+                }
+
+                print(f"       [3/3] Saving to database...")
+                vid_id = await _save_video_to_db(db_client, video_record, video_data.get("comments", []))
+                if vid_id:
+                    scraped_count += 1
+                    video_ids.append(vid_id)
+                    newly_scraped_ids.append(vid_id)
+                    print(f"       [OK] SAVED! Video ID: {vid_id}")
+                    logger.info(f"Saved (HTTP): {tiktok_id}")
+                else:
+                    print(f"       [FAIL] Database save failed")
+        else:
+            print(f"       [!] HTTP insufficient - queued for browser scraping")
             browser_needed_urls.append(url)
 
     # PHASE 2: Fall back to browser for URLs that HTTP couldn't handle
     if browser_needed_urls:
+        print(f"\n  PHASE 1b: BROWSER SCRAPING (for comments)")
+        print(f"  {len(browser_needed_urls)} URL(s) require browser scraping...")
         logger.info(f"Falling back to browser for {len(browser_needed_urls)} URLs...")
         close_scraper = False
         if not scraper:
@@ -1119,10 +1459,14 @@ async def scrape_direct_urls(urls: List[str], db_client: SupabaseClient, scraper
             close_scraper = True
 
         try:
-            for url in browser_needed_urls:
+            for idx, url in enumerate(browser_needed_urls, 1):
+                print(f"\n  [Browser {idx}/{len(browser_needed_urls)}] {url[:60]}...")
                 tiktok_id = extract_tiktok_id(url)
+                print(f"       Launching browser scrape...")
                 video_data = await scraper.scrape_video_details(url)
                 if video_data:
+                    comments_count = len(video_data.get('comments', []))
+                    print(f"       [OK] Browser scraped: {comments_count} comments found")
                     resolved_url = video_data.get('url', url)
                     if not tiktok_id:
                         tiktok_id = extract_tiktok_id(resolved_url)
@@ -1143,21 +1487,40 @@ async def scrape_direct_urls(urls: List[str], db_client: SupabaseClient, scraper
                         "search_keyword": "Direct Link"
                     }
 
+                    print(f"       Saving to database...")
                     vid_id = await _save_video_to_db(db_client, video_record, video_data.get("comments", []))
                     if vid_id:
                         scraped_count += 1
                         video_ids.append(vid_id)
+                        newly_scraped_ids.append(vid_id)
+                        print(f"       [OK] SAVED! Video ID: {vid_id}")
                         logger.info(f"Saved (Browser): {tiktok_id}")
+                    else:
+                        print(f"       [FAIL] Database save failed")
+                else:
+                    print(f"       [FAIL] Browser scrape returned no data")
         finally:
             if close_scraper:
                 await scraper.stop()
+
+    # Print scraping summary
+    print("\n" + "-"*60)
+    print("  PHASE 1 COMPLETE: SCRAPING SUMMARY")
+    print("-"*60)
+    print(f"  Total URLs processed: {len(urls)}")
+    print(f"  Successfully scraped: {scraped_count}")
+    print(f"  Skipped/Failed: {len(urls) - scraped_count}")
+    if newly_scraped_ids:
+        print(f"  [NEW] Newly saved video IDs: {newly_scraped_ids}")
+    print("-"*60)
 
     return {
         "keyword": "Direct Link",
         "found": len(urls),
         "scraped": scraped_count,
         "skipped": len(urls) - scraped_count,
-        "video_ids": video_ids
+        "video_ids": video_ids,
+        "newly_scraped_ids": newly_scraped_ids
     }
 
 async def scrape_and_save(keyword: str, max_videos: int, db_client: SupabaseClient, scraper: TikTokScraper = None, headless: bool = True) -> Dict[str, Any]:

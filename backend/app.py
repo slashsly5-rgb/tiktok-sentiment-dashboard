@@ -17,6 +17,7 @@ import textwrap
 import json
 import os
 import time
+import requests
 from config import Config
 
 # Configure logging
@@ -61,6 +62,19 @@ if not db:
     st.error("⚠️ Application could not connect to the database. Please check your Secrets.")
     st.stop()
 
+# Health check endpoint - responds to ?health=true query parameter
+# Also works with Streamlit's built-in /_stcore/health endpoint
+query_params = st.query_params
+if query_params.get("health") == "true":
+    health_status = {
+        "status": "ok",
+        "service": "streamlit-frontend",
+        "database_connected": db is not None,
+        "timestamp": datetime.now().isoformat()
+    }
+    st.json(health_status)
+    st.stop()
+
 # Helper Functions for UI
 def fmt_num(n):
     if not n: return "0"
@@ -72,10 +86,19 @@ def fmt_num(n):
     except:
         return str(n)
 
-def render_video_card(v, compact=False):
+def render_video_card(v, compact=False, is_new=False):
     # Prepare Data
     sent = v.get('sentiment', 'Not Analyzed')
-    sent_score = v.get('sentiment_score', 5)
+    sent_score = v.get('sentiment_score')
+    if sent_score is None:
+        sent_score = 5  # Default to 5 (neutral) if None
+
+    # NEW badge HTML if video was just scraped
+    new_badge_html = ""
+    new_border_style = ""
+    if is_new:
+        new_badge_html = '<span style="background:linear-gradient(135deg, #00D4FF, #7B2FF7); color:white; padding:3px 8px; border-radius:4px; font-size:9px; font-weight:800; margin-left:8px; animation:pulse 2s infinite;">NEW</span>'
+        new_border_style = "box-shadow: 0 0 15px rgba(0, 212, 255, 0.5); border: 2px solid #00D4FF;"
     
     # Styling
     border_color = "#F39C12" # Neutral
@@ -126,14 +149,18 @@ def render_video_card(v, compact=False):
 
     tiktok_url = f"https://www.tiktok.com/@{v.get('author_username', 'user')}/video/{v.get('tiktok_id', '')}"
     
+    # Determine card class based on is_new
+    card_class = "video-card video-card-new" if is_new else "video-card"
+    extra_style = new_border_style if is_new else ""
+
     if compact:
         # Mini card
         html = f"""
-        <div class="video-card" style="padding:15px; margin-bottom:10px; border:1px solid #444; background:#262730; border-radius:12px;">
+        <div class="{card_class}" style="padding:15px; margin-bottom:10px; border:1px solid #444; background:#262730; border-radius:12px; {extra_style}">
             <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
                 <div style="font-weight:700; font-size:12px; color:#FAFAFA;">
                     <a href="{tiktok_url}" target="_blank" style="text-decoration:none; color:#FAFAFA; display:flex; align-items:center; gap:4px;">
-                        @{v.get('author_username')} 🔗
+                        @{v.get('author_username')} 🔗 {new_badge_html}
                     </a>
                 </div>
                 <div style="font-size:10px; color:#999;">{sent_score}</div>
@@ -147,14 +174,15 @@ def render_video_card(v, compact=False):
     else:
         # Full detailed card
         html = f"""
-        <div style="background:#262730; border:1px solid #444; border-radius:12px; padding:20px; margin-bottom:20px; box-shadow:0 2px 5px rgba(0,0,0,0.2); height:510px; display:flex; flex-direction:column; position:relative;">
+        <div class="{card_class}" style="background:#262730; border:1px solid #444; border-radius:12px; padding:20px; margin-bottom:20px; box-shadow:0 2px 5px rgba(0,0,0,0.2); height:510px; display:flex; flex-direction:column; position:relative; {extra_style}">
             <div style="position:absolute; left:0; top:0; bottom:0; width:6px; background:{border_color};"></div>
-            
+
             <div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:15px;">
                 <div style="font-weight:700; font-size:14px; color:#FAFAFA;">
                      <a href="{tiktok_url}" target="_blank" style="text-decoration:none; color:#FAFAFA; display:flex; align-items:center; gap:6px;">
                         @{v.get('author_username')}
                         <span style="font-size:12px; opacity:0.7;">🔗</span>
+                        {new_badge_html}
                     </a>
                 </div>
                 <div class="badge {cls}">{sent_label}</div>
@@ -354,6 +382,22 @@ css_styles = """
     .badge-neutral { background: rgba(243, 156, 18, 0.15); color: #F39C12; }
     .badge-negative { background: rgba(231, 76, 60, 0.15); color: #E74C3C; }
     .badge-none { border: 1px solid #EEE; color: #999; }
+
+    /* NEW video highlight animation */
+    @keyframes pulse {
+        0% { opacity: 1; transform: scale(1); }
+        50% { opacity: 0.8; transform: scale(1.05); }
+        100% { opacity: 1; transform: scale(1); }
+    }
+    @keyframes glow {
+        0% { box-shadow: 0 0 5px rgba(0, 212, 255, 0.5); }
+        50% { box-shadow: 0 0 20px rgba(0, 212, 255, 0.8); }
+        100% { box-shadow: 0 0 5px rgba(0, 212, 255, 0.5); }
+    }
+    .video-card-new {
+        animation: glow 2s ease-in-out infinite;
+        border: 2px solid #00D4FF !important;
+    }
 </style>
 """
 st.markdown(css_styles, unsafe_allow_html=True)
@@ -510,82 +554,255 @@ if db:
 
         if submitted and target_input:
             status_box = st.empty()
-                
+
             if mode == "keyword":
+                # ============================================
+                # KEYWORD MODE: Subprocess (unchanged)
+                # ============================================
                 status_box.info(f"⏳ Scraping {max_vids} videos for '{target_input}'... Please wait.")
                 cmd_args = ["--keywords", target_input, "--max", str(max_vids)]
-            else:
-                status_box.info(f"⏳ Scraping Single Video... Please wait.")
-                cmd_args = ["--urls", target_input]
 
-            try:
-                # Run the scraper script as a subprocess
-                import os
-                from pathlib import Path
-                
-                # Get repo root (parent of backend/)
-                import pathlib
-                current_file_path = Path(__file__).resolve()
-                if current_file_path.parent.name == "backend":
-                     # Running directly from backend/app.py
-                     repo_root = current_file_path.parent.parent
-                else:
-                     # Running from root app.py (launcher)
-                     repo_root = current_file_path.parent
-                
-                backend_dir = repo_root / "backend"
-                scraper_script = backend_dir / "run_scraper_job.py"
-                    
-                base_cmd = [
-                    sys.executable, 
-                    str(scraper_script)
-                ] + cmd_args + [
-                    "--openai_key", Config.OPENAI_API_KEY or ""  # Force explicit key pass
-                ]
-                
-                if show_browser:
-                    base_cmd.append("--visible")
-                
-                cmd = base_cmd # Alias for clarity
-                    
-                # Prepare environment for subprocess
-                env = os.environ.copy()
-                env["SUPABASE_URL"] = Config.SUPABASE_URL or ""
-                env["SUPABASE_SERVICE_ROLE_KEY"] = Config.SUPABASE_SERVICE_ROLE_KEY or ""
-                env["SUPABASE_ANON_KEY"] = Config.SUPABASE_ANON_KEY or ""
-                env["OPENAI_API_KEY"] = Config.OPENAI_API_KEY or ""
-                env["PYTHONPATH"] = str(backend_dir)
-                
-                with st.spinner(f"Running analysis for '{target_input}'... This may take a minute."):
-                    result = subprocess.run(cmd, capture_output=True, text=True, cwd=str(backend_dir), env=env)
-                    
-                    debug_img_path = backend_dir / "search_debug.png"
-                    found_videos = "0 scraped" not in result.stdout and "found: 0" not in result.stdout.lower()
-                    
-                    with st.expander("View Analysis Logs", expanded=not found_videos or result.returncode != 0):
-                        st.code(result.stdout + "\n" + result.stderr)
-                        
-                        if debug_img_path.exists():
-                            st.error("📸 Scraper reached TikTok but may be blocked. Check the screenshot below.")
-                            st.image(str(debug_img_path), caption="What the scraper saw", use_container_width=True)
-                            st.info("💡 TIP: If you see a puzzle captcha, try running with 'Show Browser' checked and solve it manually.")
-
-                    combined_output = result.stdout + "\n" + result.stderr
-                    st.session_state["last_logs"] = combined_output 
-
-                    if result.returncode == 0:
-                        if found_videos:
-                            status_box.success("✅ Analysis Complete! Refreshing dashboard...")
-                            st.cache_data.clear() 
-                            st.cache_resource.clear()
-                            time.sleep(1) 
-                            st.rerun() 
-                        else:
-                            status_box.warning("⚠️ Scraper finished but found 0 videos. See logs/screenshot above.")
+                try:
+                    import os
+                    from pathlib import Path
+                    import pathlib
+                    current_file_path = Path(__file__).resolve()
+                    if current_file_path.parent.name == "backend":
+                         repo_root = current_file_path.parent.parent
                     else:
-                        status_box.error(f"❌ Error during scrape: Check logs below.")
-            except Exception as e:
-                st.error(f"❌ Execution failed: {e}")
+                         repo_root = current_file_path.parent
+
+                    backend_dir = repo_root / "backend"
+                    scraper_script = backend_dir / "run_scraper_job.py"
+
+                    provider = Config.LLM_PROVIDER
+                    if provider == "mistral":
+                        api_key = Config.MISTRAL_API_KEY or ""
+                    else:
+                        api_key = Config.OPENAI_API_KEY or ""
+
+                    base_cmd = [
+                        sys.executable,
+                        str(scraper_script)
+                    ] + cmd_args + [
+                        "--api_key", api_key,
+                        "--provider", provider
+                    ]
+
+                    if show_browser:
+                        base_cmd.append("--visible")
+
+                    cmd = base_cmd
+
+                    env = os.environ.copy()
+                    env["SUPABASE_URL"] = Config.SUPABASE_URL or ""
+                    env["SUPABASE_SERVICE_ROLE_KEY"] = Config.SUPABASE_SERVICE_ROLE_KEY or ""
+                    env["SUPABASE_ANON_KEY"] = Config.SUPABASE_ANON_KEY or ""
+                    env["OPENAI_API_KEY"] = Config.OPENAI_API_KEY or ""
+                    env["PYTHONPATH"] = str(backend_dir)
+
+                    with st.spinner(f"Running analysis for '{target_input}'... This may take a minute."):
+                        result = subprocess.run(cmd, capture_output=True, text=True, cwd=str(backend_dir), env=env)
+
+                        debug_img_path = backend_dir / "search_debug.png"
+                        found_videos = "0 scraped" not in result.stdout and "found: 0" not in result.stdout.lower()
+
+                        with st.expander("View Analysis Logs", expanded=not found_videos or result.returncode != 0):
+                            st.code(result.stdout + "\n" + result.stderr)
+
+                            if debug_img_path.exists():
+                                st.error("📸 Scraper reached TikTok but may be blocked. Check the screenshot below.")
+                                st.image(str(debug_img_path), caption="What the scraper saw", use_container_width=True)
+                                st.info("💡 TIP: If you see a puzzle captcha, try running with 'Show Browser' checked and solve it manually.")
+
+                        combined_output = result.stdout + "\n" + result.stderr
+                        st.session_state["last_logs"] = combined_output
+
+                        if result.returncode == 0:
+                            if found_videos:
+                                try:
+                                    import re
+                                    json_matches = re.findall(r'\{[^{}]*"status"[^{}]*\}', result.stdout, re.DOTALL)
+                                    if json_matches:
+                                        last_json = json_matches[-1]
+                                        result_data = json.loads(last_json)
+                                        newly_scraped = result_data.get('video_ids', [])
+                                        if newly_scraped:
+                                            st.session_state["newly_scraped_ids"] = newly_scraped
+                                            st.session_state["scrape_timestamp"] = time.time()
+                                except:
+                                    pass
+
+                                status_box.success("✅ Analysis Complete! Refreshing dashboard...")
+                                st.cache_data.clear()
+                                st.cache_resource.clear()
+                                time.sleep(1)
+                                st.rerun()
+                            else:
+                                status_box.warning("⚠️ Scraper finished but found 0 videos. See logs/screenshot above.")
+                        else:
+                            status_box.error(f"❌ Error during scrape: Check logs below.")
+                except Exception as e:
+                    st.error(f"❌ Execution failed: {e}")
+
+            else:
+                # ============================================
+                # SINGLE VIDEO MODE: Flask API call
+                # ============================================
+                status_box.info(f"⏳ Analyzing Single Video via API... Please wait (this may take up to 2 minutes).")
+
+                try:
+                    # Determine Flask API URL
+                    api_port = int(os.getenv("PORT", os.getenv("API_PORT", "5000")))
+                    api_host = os.getenv("API_HOST", "127.0.0.1")
+                    # 0.0.0.0 is a server bind address, not a client connect address
+                    if api_host == "0.0.0.0":
+                        api_host = "127.0.0.1"
+                    # For Railway/production, use BACKEND_URL if set
+                    backend_url = os.getenv("BACKEND_URL", f"http://{api_host}:{api_port}")
+                    api_endpoint = f"{backend_url}/api/scrape/single-video"
+
+                    # Step progress display
+                    step_container = st.container()
+
+                    with st.spinner(f"Scraping and analyzing video... This may take a minute."):
+                        response = requests.post(
+                            api_endpoint,
+                            json={"url": target_input},
+                            timeout=150  # 2.5 min timeout for scrape+analyze
+                        )
+
+                        result_data = response.json()
+
+                        # Display step-by-step progress log
+                        steps = result_data.get("steps", [])
+                        if steps:
+                            with step_container:
+                                st.markdown("#### 📋 Processing Steps")
+                                for step_info in steps:
+                                    step_num = step_info.get("step", "?")
+                                    step_name = step_info.get("name", "Unknown")
+                                    step_status = step_info.get("status", "unknown")
+                                    step_detail = step_info.get("detail", "")
+                                    step_dur = step_info.get("duration", 0)
+
+                                    # Status icon
+                                    if step_status in ("success", "completed", "updated"):
+                                        icon = "✅"
+                                    elif step_status in ("failed", "error"):
+                                        icon = "❌"
+                                    elif step_status == "skipped":
+                                        icon = "⏭️"
+                                    elif step_status in ("exists", "not_found", "no_data"):
+                                        icon = "ℹ️"
+                                    else:
+                                        icon = "⏳"
+
+                                    st.markdown(
+                                        f"`Step {step_num}` {icon} **{step_name}** — {step_detail} "
+                                        f"<span style='color:#666; font-size:11px;'>({step_dur}s)</span>",
+                                        unsafe_allow_html=True
+                                    )
+
+                        # Store logs
+                        st.session_state["last_logs"] = json.dumps(result_data, indent=2, default=str)
+
+                        if response.status_code == 200 and result_data.get("status") == "completed":
+                            video_id = result_data.get("video_id")
+                            video_data = result_data.get("video", {})
+                            total_dur = result_data.get("total_duration", 0)
+
+                            # Store newly scraped ID for highlighting
+                            if video_id:
+                                st.session_state["newly_scraped_ids"] = [video_id]
+                                st.session_state["scrape_timestamp"] = time.time()
+
+                            # Show result card
+                            st.success(f"✅ Analysis Complete in {total_dur}s! Video saved to database.")
+
+                            # Display video result card
+                            sent_data = video_data.get("sentiment", {})
+                            sentiment_label = sent_data.get("sentiment", "N/A") if sent_data else "N/A"
+                            sentiment_score = sent_data.get("sentimentScore", 5) if sent_data else 5
+                            summary = sent_data.get("summary", "No summary available.") if sent_data else "No summary available."
+
+                            # Sentiment color
+                            if "Positive" in str(sentiment_label):
+                                sent_color = "#2ECC71"
+                            elif "Negative" in str(sentiment_label):
+                                sent_color = "#E74C3C"
+                            else:
+                                sent_color = "#F39C12"
+
+                            score_pct = min(max((int(sentiment_score) if sentiment_score else 5) * 10, 5), 95)
+
+                            author = video_data.get("authorUsername", "Unknown")
+                            desc = video_data.get("description", "No description")
+                            views = video_data.get("viewsCount", 0)
+                            likes = video_data.get("likesCount", 0)
+                            comments_ct = video_data.get("commentsCount", 0)
+                            shares = video_data.get("sharesCount", 0)
+
+                            key_issues = sent_data.get("keyIssues", []) if sent_data else []
+                            issues_html = ""
+                            if isinstance(key_issues, list):
+                                for ki in key_issues[:5]:
+                                    issues_html += f'<span style="background:#FFF3E0; color:#E67E22; padding:3px 8px; border-radius:4px; font-size:10px; font-weight:600; margin-right:4px;">{ki}</span>'
+
+                            result_card_html = f"""
+                            <div style="background:#262730; border:2px solid {sent_color}; border-radius:12px; padding:20px; margin:15px 0; box-shadow:0 0 15px {sent_color}40;">
+                                <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:15px;">
+                                    <div style="font-weight:700; font-size:16px; color:#FAFAFA;">@{author}</div>
+                                    <span style="background:{sent_color}25; color:{sent_color}; padding:5px 12px; border-radius:20px; font-weight:800; font-size:11px; letter-spacing:0.5px;">{str(sentiment_label).upper()}</span>
+                                </div>
+                                <div style="font-size:13px; color:#CCC; margin-bottom:12px; line-height:1.4;">{str(desc)[:200]}</div>
+                                <div style="background:#1A1A1A; padding:12px; border-radius:8px; margin-bottom:12px;">
+                                    <div style="font-size:10px; font-weight:700; color:#888; margin-bottom:6px;">SENTIMENT SCORE</div>
+                                    <div style="width:100%; height:8px; background:#333; border-radius:4px; overflow:hidden;">
+                                        <div style="width:{score_pct}%; height:100%; background:linear-gradient(90deg, #E74C3C 0%, #F39C12 50%, #2ECC71 100%); border-radius:4px;"></div>
+                                    </div>
+                                    <div style="font-size:11px; color:#AAA; margin-top:4px;">{sentiment_score}/10</div>
+                                </div>
+                                <div style="background:#1A1A1A; padding:12px; border-radius:8px; margin-bottom:12px;">
+                                    <div style="font-size:10px; font-weight:700; color:#888; margin-bottom:6px;">AI SUMMARY</div>
+                                    <div style="font-size:12px; color:#DDD; line-height:1.5;">{summary}</div>
+                                </div>
+                                <div style="margin-bottom:12px;">
+                                    <div style="font-size:10px; font-weight:700; color:#888; margin-bottom:6px;">KEY ISSUES</div>
+                                    <div style="display:flex; flex-wrap:wrap; gap:4px;">{issues_html}</div>
+                                </div>
+                                <div style="display:flex; justify-content:space-between; color:#999; font-size:12px; border-top:1px solid #333; padding-top:10px;">
+                                    <span>👁️ {fmt_num(views)}</span>
+                                    <span>❤️ {fmt_num(likes)}</span>
+                                    <span>💬 {fmt_num(comments_ct)}</span>
+                                    <span>↗️ {fmt_num(shares)}</span>
+                                </div>
+                            </div>
+                            """
+                            result_card_html = "".join(line.strip() for line in result_card_html.split("\n"))
+                            st.markdown(result_card_html, unsafe_allow_html=True)
+
+                            # Refresh button
+                            if st.button("🔄 Refresh Dashboard to See New Video"):
+                                st.cache_data.clear()
+                                st.cache_resource.clear()
+                                st.rerun()
+
+                        elif result_data.get("status") == "partial":
+                            status_box.warning(f"⚠️ Partial result: Video scraped but some steps failed. Check steps above.")
+
+                        else:
+                            error_msg = result_data.get("error", "Unknown error")
+                            status_box.error(f"❌ Analysis failed: {error_msg}")
+
+                except requests.exceptions.ConnectionError:
+                    status_box.error("❌ Cannot connect to Flask API backend. Make sure it's running on the expected port.")
+                    st.info(f"💡 Expected backend at: {api_endpoint if 'api_endpoint' in dir() else 'http://127.0.0.1:5000'}")
+                except requests.exceptions.Timeout:
+                    status_box.error("❌ Request timed out. The video may be taking too long to scrape.")
+                except Exception as e:
+                    status_box.error(f"❌ Error: {e}")
+                    st.session_state["last_logs"] = str(e)
 
 
 
@@ -624,6 +841,25 @@ if db:
 
 if not overview:
     overview = {"total_videos": 0, "total_analyzed": 0, "avg_sentiment": 5, "total_views": 0, "sentiment_breakdown": {}}
+
+# Helper to check if video is newly scraped (within last 5 minutes)
+def is_video_new(video_id):
+    """Check if a video was just scraped based on session state"""
+    newly_scraped = st.session_state.get("newly_scraped_ids", [])
+    scrape_time = st.session_state.get("scrape_timestamp", 0)
+    # Only highlight if scraped within last 5 minutes
+    if time.time() - scrape_time > 300:
+        return False
+    return video_id in newly_scraped
+
+# Show notification if there are newly scraped videos
+newly_scraped_ids = st.session_state.get("newly_scraped_ids", [])
+scrape_timestamp = st.session_state.get("scrape_timestamp", 0)
+if newly_scraped_ids and (time.time() - scrape_timestamp < 300):
+    # Count how many newly scraped videos are in the current view
+    new_in_view = sum(1 for v in videos if v.get('id') in newly_scraped_ids)
+    if new_in_view > 0:
+        st.toast(f"[NEW] {new_in_view} newly scraped video(s) highlighted below!", icon="✨")
 
 total_views = overview.get('total_views', 0)
 total_likes = sum(v.get('likes_count', 0) for v in videos)
@@ -826,7 +1062,7 @@ with col_left:
         return str(n)
 
     for v in videos[:3]:
-        render_video_card(v, compact=True)
+        render_video_card(v, compact=True, is_new=is_video_new(v.get('id')))
 
     # METRICS ROW
     st.markdown("<br>", unsafe_allow_html=True)
@@ -921,7 +1157,7 @@ with col_right:
     # Render detailed cards
     if videos:
         for v in videos[:5]:
-            render_video_card(v)
+            render_video_card(v, is_new=is_video_new(v.get('id')))
     else:
         st.info("No analysis data available yet. Run a scrape to populate!")
 
@@ -976,7 +1212,7 @@ else:
     for idx, v in enumerate(filtered_videos):
         col = cols[idx % 3]
         with col:
-            render_video_card(v)
+            render_video_card(v, is_new=is_video_new(v.get('id')))
 
 # 5. FLOATING CHAT WIDGET
 # ============================================

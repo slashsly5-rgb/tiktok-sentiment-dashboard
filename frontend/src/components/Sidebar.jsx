@@ -8,6 +8,7 @@ const Sidebar = () => {
 
   const navItems = [
     { id: 'home', icon: 'fa-home', label: 'Analytics', path: '/' },
+    { id: 'analyze', icon: 'fa-search', label: 'Analyze Video', path: '/analyze' },
     { id: 'assistant', icon: 'fa-robot', label: 'AI Assistant', path: '/assistant' },
     // { id: 'analytics', icon: 'fa-chart-line', label: 'Analytics' },
     // { id: 'news', icon: 'fa-newspaper', label: 'News' },

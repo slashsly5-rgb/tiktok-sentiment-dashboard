@@ -4,6 +4,7 @@ import Sidebar from './components/Sidebar'
 import Dashboard from './components/Dashboard'
 import ChatInterface from './components/ChatInterface'
 import AssistantPage from './pages/AssistantPage'
+import SingleVideoAnalysis from './components/SingleVideoAnalysis'
 import { fetchDashboardData, fetchVideosWithSentiment } from './services/api'
 import './App.css'
 
@@ -92,6 +93,8 @@ function App() {
           <Route path="/assistant" element={
             <AssistantPage filters={chatFilters} />
           } />
+
+          <Route path="/analyze" element={<SingleVideoAnalysis />} />
         </Routes>
       </div>
     </Router>

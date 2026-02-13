@@ -41,11 +41,11 @@ class Config:
     # ============================================
     SUPABASE_URL = get_secret("SUPABASE_URL")
     
-    # Try specific keys, then fallback to generic SUPABASE_KEY
+    # Try specific keys, then fallback to generic SUPABASE_KEY or SUPABASE_ANON_KEY
     _generic_key = get_secret("SUPABASE_KEY")
-    
+
     SUPABASE_ANON_KEY = get_secret("SUPABASE_ANON_KEY", _generic_key)
-    SUPABASE_SERVICE_ROLE_KEY = get_secret("SUPABASE_SERVICE_ROLE_KEY", _generic_key)
+    SUPABASE_SERVICE_ROLE_KEY = get_secret("SUPABASE_SERVICE_ROLE_KEY", _generic_key or SUPABASE_ANON_KEY)
 
     # ============================================
     # OpenAI Configuration
@@ -55,10 +55,15 @@ class Config:
     # ============================================
     # Mistral AI Configuration
     # ============================================
-    MISTRAL_API_KEY = os.getenv("MISTRAL_API_KEY")
-    MISTRAL_MODEL = os.getenv("MISTRAL_MODEL", "mistral-medium-latest")
+    MISTRAL_API_KEY = get_secret("MISTRAL_API_KEY")
+    MISTRAL_MODEL = os.getenv("MISTRAL_MODEL", "mistral-small-latest")  # Changed to small for cost efficiency
     MISTRAL_MAX_TOKENS = int(os.getenv("MISTRAL_MAX_TOKENS", "1000"))
     MISTRAL_TEMPERATURE = float(os.getenv("MISTRAL_TEMPERATURE", "0.7"))
+
+    # ============================================
+    # LLM Provider Selection
+    # ============================================
+    LLM_PROVIDER = os.getenv("LLM_PROVIDER", "mistral")  # "mistral" or "openai"
 
     # Chat session configuration
     CHAT_SESSION_TIMEOUT = int(os.getenv("CHAT_SESSION_TIMEOUT", "3600"))  # 1 hour in seconds
@@ -68,6 +73,12 @@ class Config:
     # Apify Configuration (Optional)
     # ============================================
     APIFY_API_TOKEN = os.getenv("APIFY_API_TOKEN")
+    # Primary: tiktok-video-scraper-task (cheaper, faster)
+    APIFY_TASK_URL_PRIMARY = os.getenv("APIFY_TASK_URL_PRIMARY", "")
+    # Fallback: tiktok-scraper-task (more expensive, use if primary fails)
+    APIFY_TASK_URL_FALLBACK = os.getenv("APIFY_TASK_URL_FALLBACK", "")
+    # Legacy alias for backwards compatibility
+    APIFY_TASK_URL = APIFY_TASK_URL_PRIMARY
 
     # ============================================
     # API Configuration

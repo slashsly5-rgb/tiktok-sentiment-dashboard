@@ -12,5 +12,5 @@ if backend_dir not in sys.path:
 app_path = os.path.join(backend_dir, "app.py")
 
 # execute the application file
-with open(app_path) as f:
+with open(app_path, encoding='utf-8') as f:
     exec(f.read())
