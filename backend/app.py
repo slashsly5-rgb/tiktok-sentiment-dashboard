@@ -17,8 +17,23 @@ import textwrap
 import json
 import os
 import time
+import asyncio
 import requests
 from config import Config
+
+# Import scraper functions directly (no Flask dependency)
+try:
+    from scraper import (
+        scrape_video_via_http,
+        get_oembed_data,
+        scrape_video_via_apify,
+        extract_tiktok_id
+    )
+    from analyzer import analyze_from_database
+    SCRAPER_AVAILABLE = True
+except ImportError as e:
+    SCRAPER_AVAILABLE = False
+    print(f"Warning: Scraper modules not available: {e}")
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -647,162 +662,305 @@ if db:
 
             else:
                 # ============================================
-                # SINGLE VIDEO MODE: Flask API call
+                # SINGLE VIDEO MODE: Direct Scraper (No Flask)
                 # ============================================
-                status_box.info(f"⏳ Analyzing Single Video via API... Please wait (this may take up to 2 minutes).")
+                if not SCRAPER_AVAILABLE:
+                    status_box.error("❌ Scraper modules not available. Check installation.")
+                    st.stop()
+
+                status_box.info(f"⏳ Analyzing Single Video... Please wait (this may take up to 2 minutes).")
+
+                # Helper to run async functions synchronously
+                def run_async(coro):
+                    if sys.platform == 'win32':
+                        asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
+                    loop = asyncio.new_event_loop()
+                    asyncio.set_event_loop(loop)
+                    try:
+                        return loop.run_until_complete(coro)
+                    finally:
+                        loop.close()
 
                 try:
-                    # Determine Flask API URL
-                    api_port = int(os.getenv("PORT", os.getenv("API_PORT", "5000")))
-                    api_host = os.getenv("API_HOST", "127.0.0.1")
-                    # 0.0.0.0 is a server bind address, not a client connect address
-                    if api_host == "0.0.0.0":
-                        api_host = "127.0.0.1"
-                    # For Railway/production, use BACKEND_URL if set
-                    backend_url = os.getenv("BACKEND_URL", f"http://{api_host}:{api_port}")
-                    api_endpoint = f"{backend_url}/api/scrape/single-video"
+                    start_time = time.time()
+                    steps = []
+                    video_id = None
+                    tiktok_id = None
+                    url = target_input
 
                     # Step progress display
                     step_container = st.container()
 
                     with st.spinner(f"Scraping and analyzing video... This may take a minute."):
-                        response = requests.post(
-                            api_endpoint,
-                            json={"url": target_input},
-                            timeout=150  # 2.5 min timeout for scrape+analyze
-                        )
 
-                        result_data = response.json()
+                        # ====== STEP 1: URL Validation ======
+                        step_start = time.time()
+                        try:
+                            if not ('tiktok.com' in url or 'vm.tiktok.com' in url or 'vt.tiktok.com' in url):
+                                raise ValueError("Invalid TikTok URL format")
+                            tiktok_id = extract_tiktok_id(url)
+                            steps.append({"step": 1, "name": "URL Validation", "status": "success",
+                                          "detail": f"TikTok ID: {tiktok_id}" if tiktok_id else "Valid URL",
+                                          "duration": round(time.time() - step_start, 2)})
+                        except Exception as e:
+                            steps.append({"step": 1, "name": "URL Validation", "status": "failed",
+                                          "detail": str(e), "duration": round(time.time() - step_start, 2)})
+                            raise ValueError(f"Invalid URL: {e}")
 
-                        # Display step-by-step progress log
-                        steps = result_data.get("steps", [])
-                        if steps:
-                            with step_container:
-                                st.markdown("#### 📋 Processing Steps")
-                                for step_info in steps:
-                                    step_num = step_info.get("step", "?")
-                                    step_name = step_info.get("name", "Unknown")
-                                    step_status = step_info.get("status", "unknown")
-                                    step_detail = step_info.get("detail", "")
-                                    step_dur = step_info.get("duration", 0)
+                        # ====== STEP 2: Check Existing ======
+                        step_start = time.time()
+                        existing_video = None
+                        if tiktok_id:
+                            existing_video = db.get_video_by_tiktok_id(tiktok_id)
+                            if existing_video:
+                                video_id = existing_video['id']
+                                # Check if sentiment already exists (fast path)
+                                sr = db.supabase.table("sentiment_analysis").select("id,sentiment,sentiment_score,summary,key_issues").eq("video_id", video_id).execute()
+                                if sr.data:
+                                    steps.append({"step": 2, "name": "Check Existing", "status": "exists",
+                                                  "detail": f"Video + sentiment found (ID: {video_id})",
+                                                  "duration": round(time.time() - step_start, 2)})
+                                    # FAST PATH: Skip scraping, return cached data
+                                    for skip_step, skip_name in [(3, "HTTP Scrape"), (4, "oEmbed Enrich"), (5, "Apify Fallback"), (6, "Save to DB"), (7, "LLM Analysis")]:
+                                        steps.append({"step": skip_step, "name": skip_name, "status": "skipped",
+                                                      "detail": "Using cached data", "duration": 0})
+                                    # Jump to result display with cached data
+                                    sent_row = sr.data[0]
+                                    total_dur = round(time.time() - start_time, 2)
+                                    st.session_state["newly_scraped_ids"] = [video_id]
+                                    st.session_state["scrape_timestamp"] = time.time()
+                                    steps.append({"step": 8, "name": "Return Result", "status": "success",
+                                                  "detail": "Returned cached analysis", "duration": 0})
+                                    # Display steps
+                                    with step_container:
+                                        st.markdown("#### 📋 Processing Steps")
+                                        for step_info in steps:
+                                            icon = {"success": "✅", "skipped": "⏭️", "exists": "ℹ️"}.get(step_info["status"], "⏳")
+                                            st.markdown(f"`Step {step_info['step']}` {icon} **{step_info['name']}** — {step_info['detail']} "
+                                                        f"<span style='color:#666; font-size:11px;'>({step_info['duration']}s)</span>", unsafe_allow_html=True)
+                                    st.success(f"✅ Analysis Complete in {total_dur}s! (Cached)")
+                                    # Display result card
+                                    sentiment_label = sent_row.get("sentiment", "N/A")
+                                    sentiment_score = sent_row.get("sentiment_score", 5)
+                                    summary = sent_row.get("summary", "No summary available.")
+                                    key_issues = sent_row.get("key_issues", [])
+                                    author = existing_video.get("author_username", "Unknown")
+                                    desc = existing_video.get("description", "No description")
+                                    views = existing_video.get("views_count", 0)
+                                    likes = existing_video.get("likes_count", 0)
+                                    comments_ct = existing_video.get("comments_count", 0)
+                                    shares = existing_video.get("shares_count", 0)
+                                    sent_color = "#2ECC71" if "Positive" in str(sentiment_label) else "#E74C3C" if "Negative" in str(sentiment_label) else "#F39C12"
+                                    score_pct = min(max((int(sentiment_score) if sentiment_score else 5) * 10, 5), 95)
+                                    issues_html = "".join([f'<span style="background:#FFF3E0; color:#E67E22; padding:3px 8px; border-radius:4px; font-size:10px; font-weight:600; margin-right:4px;">{ki}</span>' for ki in (key_issues or [])[:5]])
+                                    result_card_html = f"""<div style="background:#262730; border:2px solid {sent_color}; border-radius:12px; padding:20px; margin:15px 0; box-shadow:0 0 15px {sent_color}40;"><div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:15px;"><div style="font-weight:700; font-size:16px; color:#FAFAFA;">@{author}</div><span style="background:{sent_color}25; color:{sent_color}; padding:5px 12px; border-radius:20px; font-weight:800; font-size:11px; letter-spacing:0.5px;">{str(sentiment_label).upper()}</span></div><div style="font-size:13px; color:#CCC; margin-bottom:12px; line-height:1.4;">{str(desc)[:200]}</div><div style="background:#1A1A1A; padding:12px; border-radius:8px; margin-bottom:12px;"><div style="font-size:10px; font-weight:700; color:#888; margin-bottom:6px;">SENTIMENT SCORE</div><div style="width:100%; height:8px; background:#333; border-radius:4px; overflow:hidden;"><div style="width:{score_pct}%; height:100%; background:linear-gradient(90deg, #E74C3C 0%, #F39C12 50%, #2ECC71 100%); border-radius:4px;"></div></div><div style="font-size:11px; color:#AAA; margin-top:4px;">{sentiment_score}/10</div></div><div style="background:#1A1A1A; padding:12px; border-radius:8px; margin-bottom:12px;"><div style="font-size:10px; font-weight:700; color:#888; margin-bottom:6px;">AI SUMMARY</div><div style="font-size:12px; color:#DDD; line-height:1.5;">{summary}</div></div><div style="margin-bottom:12px;"><div style="font-size:10px; font-weight:700; color:#888; margin-bottom:6px;">KEY ISSUES</div><div style="display:flex; flex-wrap:wrap; gap:4px;">{issues_html}</div></div><div style="display:flex; justify-content:space-between; color:#999; font-size:12px; border-top:1px solid #333; padding-top:10px;"><span>👁️ {fmt_num(views)}</span><span>❤️ {fmt_num(likes)}</span><span>💬 {fmt_num(comments_ct)}</span><span>↗️ {fmt_num(shares)}</span></div></div>"""
+                                    st.markdown(result_card_html, unsafe_allow_html=True)
+                                    if st.button("🔄 Refresh Dashboard to See New Video"):
+                                        st.cache_data.clear()
+                                        st.cache_resource.clear()
+                                        st.rerun()
+                                    st.stop()  # Exit early - cached path complete
+                                else:
+                                    steps.append({"step": 2, "name": "Check Existing", "status": "exists",
+                                                  "detail": f"Video found but no sentiment (ID: {video_id})",
+                                                  "duration": round(time.time() - step_start, 2)})
+                            else:
+                                steps.append({"step": 2, "name": "Check Existing", "status": "not_found",
+                                              "detail": "New video - will scrape",
+                                              "duration": round(time.time() - step_start, 2)})
+                        else:
+                            steps.append({"step": 2, "name": "Check Existing", "status": "skipped",
+                                          "detail": "No TikTok ID extracted yet",
+                                          "duration": round(time.time() - step_start, 2)})
 
-                                    # Status icon
-                                    if step_status in ("success", "completed", "updated"):
-                                        icon = "✅"
-                                    elif step_status in ("failed", "error"):
-                                        icon = "❌"
-                                    elif step_status == "skipped":
-                                        icon = "⏭️"
-                                    elif step_status in ("exists", "not_found", "no_data"):
-                                        icon = "ℹ️"
-                                    else:
-                                        icon = "⏳"
+                        # ====== STEP 3: HTTP Scrape ======
+                        step_start = time.time()
+                        video_data = None
+                        try:
+                            video_data = run_async(scrape_video_via_http(url))
+                            if video_data and (video_data.get('stats', {}).get('likes', 0) > 0 or video_data.get('description')):
+                                views = video_data.get('stats', {}).get('views', 0)
+                                likes = video_data.get('stats', {}).get('likes', 0)
+                                steps.append({"step": 3, "name": "HTTP Scrape", "status": "success",
+                                              "detail": f"{views:,} views, {likes:,} likes",
+                                              "duration": round(time.time() - step_start, 2)})
+                            else:
+                                steps.append({"step": 3, "name": "HTTP Scrape", "status": "no_data",
+                                              "detail": "No data from HTTP",
+                                              "duration": round(time.time() - step_start, 2)})
+                        except Exception as e:
+                            steps.append({"step": 3, "name": "HTTP Scrape", "status": "failed",
+                                          "detail": str(e)[:80],
+                                          "duration": round(time.time() - step_start, 2)})
 
-                                    st.markdown(
-                                        f"`Step {step_num}` {icon} **{step_name}** — {step_detail} "
-                                        f"<span style='color:#666; font-size:11px;'>({step_dur}s)</span>",
-                                        unsafe_allow_html=True
-                                    )
+                        # ====== STEP 4: oEmbed Enrich ======
+                        step_start = time.time()
+                        try:
+                            oembed_data = run_async(get_oembed_data(url))
+                            if oembed_data:
+                                if not video_data:
+                                    video_data = {'url': url, 'stats': {'views': 0, 'likes': 0, 'shares': 0, 'comments': 0}}
+                                if not video_data.get('description') and oembed_data.get('description'):
+                                    video_data['description'] = oembed_data['description']
+                                if not video_data.get('author') or video_data.get('author') == 'Unknown':
+                                    video_data['author'] = oembed_data.get('author', 'Unknown')
+                                steps.append({"step": 4, "name": "oEmbed Enrich", "status": "success",
+                                              "detail": "Enriched metadata",
+                                              "duration": round(time.time() - step_start, 2)})
+                            else:
+                                steps.append({"step": 4, "name": "oEmbed Enrich", "status": "no_data",
+                                              "detail": "No oEmbed data",
+                                              "duration": round(time.time() - step_start, 2)})
+                        except Exception as e:
+                            steps.append({"step": 4, "name": "oEmbed Enrich", "status": "failed",
+                                          "detail": str(e)[:80],
+                                          "duration": round(time.time() - step_start, 2)})
+
+                        # ====== STEP 5: Apify Fallback ======
+                        step_start = time.time()
+                        if not video_data or (video_data.get('stats', {}).get('likes', 0) == 0 and not video_data.get('description')):
+                            try:
+                                apify_data = run_async(scrape_video_via_apify(url))
+                                if apify_data and (apify_data.get('stats', {}).get('likes', 0) > 0 or apify_data.get('description')):
+                                    video_data = apify_data
+                                    views = video_data.get('stats', {}).get('views', 0)
+                                    likes = video_data.get('stats', {}).get('likes', 0)
+                                    steps.append({"step": 5, "name": "Apify Fallback", "status": "success",
+                                                  "detail": f"{views:,} views, {likes:,} likes via Apify",
+                                                  "duration": round(time.time() - step_start, 2)})
+                                else:
+                                    steps.append({"step": 5, "name": "Apify Fallback", "status": "no_data",
+                                                  "detail": "Apify returned no data",
+                                                  "duration": round(time.time() - step_start, 2)})
+                            except Exception as e:
+                                steps.append({"step": 5, "name": "Apify Fallback", "status": "failed",
+                                              "detail": str(e)[:80],
+                                              "duration": round(time.time() - step_start, 2)})
+                        else:
+                            steps.append({"step": 5, "name": "Apify Fallback", "status": "skipped",
+                                          "detail": "HTTP scrape was successful",
+                                          "duration": round(time.time() - step_start, 2)})
+
+                        # Check if we have any data
+                        if not video_data:
+                            raise Exception("Failed to scrape video from all sources")
+
+                        # ====== STEP 6: Save to DB ======
+                        step_start = time.time()
+                        try:
+                            resolved_url = video_data.get('url', url)
+                            if not tiktok_id:
+                                tiktok_id = extract_tiktok_id(resolved_url)
+                                if not tiktok_id:
+                                    raise ValueError(f"Could not extract TikTok ID")
+
+                            video_record = {
+                                "tiktok_id": tiktok_id,
+                                "url": resolved_url,
+                                "author_username": video_data.get("author", "Unknown"),
+                                "description": video_data.get("description", ""),
+                                "views_count": int(video_data.get("stats", {}).get("views", 0)),
+                                "likes_count": int(video_data.get("stats", {}).get("likes", 0)),
+                                "shares_count": int(video_data.get("stats", {}).get("shares", 0)),
+                                "comments_count": int(video_data.get("stats", {}).get("comments", 0)),
+                                "hashtags": video_data.get("hashtags", []),
+                                "search_keyword": "Direct Link - Single Video"
+                            }
+
+                            if existing_video:
+                                db.update_video(video_record)
+                                video_id = existing_video['id']
+                                steps.append({"step": 6, "name": "Save to DB", "status": "updated",
+                                              "detail": f"Updated video (ID: {video_id})",
+                                              "duration": round(time.time() - step_start, 2)})
+                            else:
+                                video_id = db.insert_video(video_record)
+                                comments = video_data.get("comments", [])
+                                if comments and video_id:
+                                    comment_records = [{"author_username": "Unknown", "comment_text": c, "likes_count": 0} for c in comments]
+                                    db.insert_comments(video_id, comment_records)
+                                steps.append({"step": 6, "name": "Save to DB", "status": "success",
+                                              "detail": f"Saved video (ID: {video_id})",
+                                              "duration": round(time.time() - step_start, 2)})
+                        except Exception as e:
+                            steps.append({"step": 6, "name": "Save to DB", "status": "failed",
+                                          "detail": str(e)[:80],
+                                          "duration": round(time.time() - step_start, 2)})
+                            raise
+
+                        # ====== STEP 7: LLM Analysis ======
+                        step_start = time.time()
+                        sentiment_label = "N/A"
+                        sentiment_score = 5
+                        summary = "No summary available."
+                        key_issues = []
+                        try:
+                            analysis = analyze_from_database(video_id, db)
+                            if analysis:
+                                sentiment_label = analysis.get('sentiment', 'N/A')
+                                sentiment_score = analysis.get('score', 5)
+                                summary = analysis.get('summary', 'No summary available.')
+                                key_issues = analysis.get('key_issues', [])
+                                steps.append({"step": 7, "name": "LLM Analysis", "status": "success",
+                                              "detail": f"Sentiment: {sentiment_label}, Score: {sentiment_score}",
+                                              "duration": round(time.time() - step_start, 2)})
+                            else:
+                                steps.append({"step": 7, "name": "LLM Analysis", "status": "no_data",
+                                              "detail": "Analysis returned no data",
+                                              "duration": round(time.time() - step_start, 2)})
+                        except Exception as e:
+                            steps.append({"step": 7, "name": "LLM Analysis", "status": "failed",
+                                          "detail": str(e)[:80],
+                                          "duration": round(time.time() - step_start, 2)})
+
+                        # ====== STEP 8: Return Result ======
+                        total_dur = round(time.time() - start_time, 2)
+                        steps.append({"step": 8, "name": "Return Result", "status": "success",
+                                      "detail": "Complete", "duration": 0})
 
                         # Store logs
-                        st.session_state["last_logs"] = json.dumps(result_data, indent=2, default=str)
+                        st.session_state["last_logs"] = json.dumps({"steps": steps, "video_id": video_id}, indent=2)
+                        st.session_state["newly_scraped_ids"] = [video_id]
+                        st.session_state["scrape_timestamp"] = time.time()
 
-                        if response.status_code == 200 and result_data.get("status") == "completed":
-                            video_id = result_data.get("video_id")
-                            video_data = result_data.get("video", {})
-                            total_dur = result_data.get("total_duration", 0)
+                        # Display steps
+                        with step_container:
+                            st.markdown("#### 📋 Processing Steps")
+                            for step_info in steps:
+                                status_icons = {"success": "✅", "completed": "✅", "updated": "✅",
+                                               "failed": "❌", "error": "❌", "skipped": "⏭️",
+                                               "exists": "ℹ️", "not_found": "ℹ️", "no_data": "ℹ️"}
+                                icon = status_icons.get(step_info["status"], "⏳")
+                                st.markdown(f"`Step {step_info['step']}` {icon} **{step_info['name']}** — {step_info['detail']} "
+                                            f"<span style='color:#666; font-size:11px;'>({step_info['duration']}s)</span>", unsafe_allow_html=True)
 
-                            # Store newly scraped ID for highlighting
-                            if video_id:
-                                st.session_state["newly_scraped_ids"] = [video_id]
-                                st.session_state["scrape_timestamp"] = time.time()
+                        st.success(f"✅ Analysis Complete in {total_dur}s! Video saved to database.")
 
-                            # Show result card
-                            st.success(f"✅ Analysis Complete in {total_dur}s! Video saved to database.")
+                        # Get final video data for display
+                        author = video_data.get("author", "Unknown")
+                        desc = video_data.get("description", "No description")
+                        views = video_data.get("stats", {}).get("views", 0)
+                        likes = video_data.get("stats", {}).get("likes", 0)
+                        comments_ct = video_data.get("stats", {}).get("comments", 0)
+                        shares = video_data.get("stats", {}).get("shares", 0)
 
-                            # Display video result card
-                            sent_data = video_data.get("sentiment", {})
-                            sentiment_label = sent_data.get("sentiment", "N/A") if sent_data else "N/A"
-                            sentiment_score = sent_data.get("sentimentScore", 5) if sent_data else 5
-                            summary = sent_data.get("summary", "No summary available.") if sent_data else "No summary available."
+                        # Sentiment color
+                        sent_color = "#2ECC71" if "Positive" in str(sentiment_label) else "#E74C3C" if "Negative" in str(sentiment_label) else "#F39C12"
+                        score_pct = min(max((int(sentiment_score) if sentiment_score else 5) * 10, 5), 95)
+                        issues_html = "".join([f'<span style="background:#FFF3E0; color:#E67E22; padding:3px 8px; border-radius:4px; font-size:10px; font-weight:600; margin-right:4px;">{ki}</span>' for ki in (key_issues or [])[:5]])
 
-                            # Sentiment color
-                            if "Positive" in str(sentiment_label):
-                                sent_color = "#2ECC71"
-                            elif "Negative" in str(sentiment_label):
-                                sent_color = "#E74C3C"
-                            else:
-                                sent_color = "#F39C12"
+                        result_card_html = f"""<div style="background:#262730; border:2px solid {sent_color}; border-radius:12px; padding:20px; margin:15px 0; box-shadow:0 0 15px {sent_color}40;"><div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:15px;"><div style="font-weight:700; font-size:16px; color:#FAFAFA;">@{author}</div><span style="background:{sent_color}25; color:{sent_color}; padding:5px 12px; border-radius:20px; font-weight:800; font-size:11px; letter-spacing:0.5px;">{str(sentiment_label).upper()}</span></div><div style="font-size:13px; color:#CCC; margin-bottom:12px; line-height:1.4;">{str(desc)[:200]}</div><div style="background:#1A1A1A; padding:12px; border-radius:8px; margin-bottom:12px;"><div style="font-size:10px; font-weight:700; color:#888; margin-bottom:6px;">SENTIMENT SCORE</div><div style="width:100%; height:8px; background:#333; border-radius:4px; overflow:hidden;"><div style="width:{score_pct}%; height:100%; background:linear-gradient(90deg, #E74C3C 0%, #F39C12 50%, #2ECC71 100%); border-radius:4px;"></div></div><div style="font-size:11px; color:#AAA; margin-top:4px;">{sentiment_score}/10</div></div><div style="background:#1A1A1A; padding:12px; border-radius:8px; margin-bottom:12px;"><div style="font-size:10px; font-weight:700; color:#888; margin-bottom:6px;">AI SUMMARY</div><div style="font-size:12px; color:#DDD; line-height:1.5;">{summary}</div></div><div style="margin-bottom:12px;"><div style="font-size:10px; font-weight:700; color:#888; margin-bottom:6px;">KEY ISSUES</div><div style="display:flex; flex-wrap:wrap; gap:4px;">{issues_html}</div></div><div style="display:flex; justify-content:space-between; color:#999; font-size:12px; border-top:1px solid #333; padding-top:10px;"><span>👁️ {fmt_num(views)}</span><span>❤️ {fmt_num(likes)}</span><span>💬 {fmt_num(comments_ct)}</span><span>↗️ {fmt_num(shares)}</span></div></div>"""
+                        st.markdown(result_card_html, unsafe_allow_html=True)
 
-                            score_pct = min(max((int(sentiment_score) if sentiment_score else 5) * 10, 5), 95)
+                        # Refresh button
+                        if st.button("🔄 Refresh Dashboard to See New Video"):
+                            st.cache_data.clear()
+                            st.cache_resource.clear()
+                            st.rerun()
 
-                            author = video_data.get("authorUsername", "Unknown")
-                            desc = video_data.get("description", "No description")
-                            views = video_data.get("viewsCount", 0)
-                            likes = video_data.get("likesCount", 0)
-                            comments_ct = video_data.get("commentsCount", 0)
-                            shares = video_data.get("sharesCount", 0)
-
-                            key_issues = sent_data.get("keyIssues", []) if sent_data else []
-                            issues_html = ""
-                            if isinstance(key_issues, list):
-                                for ki in key_issues[:5]:
-                                    issues_html += f'<span style="background:#FFF3E0; color:#E67E22; padding:3px 8px; border-radius:4px; font-size:10px; font-weight:600; margin-right:4px;">{ki}</span>'
-
-                            result_card_html = f"""
-                            <div style="background:#262730; border:2px solid {sent_color}; border-radius:12px; padding:20px; margin:15px 0; box-shadow:0 0 15px {sent_color}40;">
-                                <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:15px;">
-                                    <div style="font-weight:700; font-size:16px; color:#FAFAFA;">@{author}</div>
-                                    <span style="background:{sent_color}25; color:{sent_color}; padding:5px 12px; border-radius:20px; font-weight:800; font-size:11px; letter-spacing:0.5px;">{str(sentiment_label).upper()}</span>
-                                </div>
-                                <div style="font-size:13px; color:#CCC; margin-bottom:12px; line-height:1.4;">{str(desc)[:200]}</div>
-                                <div style="background:#1A1A1A; padding:12px; border-radius:8px; margin-bottom:12px;">
-                                    <div style="font-size:10px; font-weight:700; color:#888; margin-bottom:6px;">SENTIMENT SCORE</div>
-                                    <div style="width:100%; height:8px; background:#333; border-radius:4px; overflow:hidden;">
-                                        <div style="width:{score_pct}%; height:100%; background:linear-gradient(90deg, #E74C3C 0%, #F39C12 50%, #2ECC71 100%); border-radius:4px;"></div>
-                                    </div>
-                                    <div style="font-size:11px; color:#AAA; margin-top:4px;">{sentiment_score}/10</div>
-                                </div>
-                                <div style="background:#1A1A1A; padding:12px; border-radius:8px; margin-bottom:12px;">
-                                    <div style="font-size:10px; font-weight:700; color:#888; margin-bottom:6px;">AI SUMMARY</div>
-                                    <div style="font-size:12px; color:#DDD; line-height:1.5;">{summary}</div>
-                                </div>
-                                <div style="margin-bottom:12px;">
-                                    <div style="font-size:10px; font-weight:700; color:#888; margin-bottom:6px;">KEY ISSUES</div>
-                                    <div style="display:flex; flex-wrap:wrap; gap:4px;">{issues_html}</div>
-                                </div>
-                                <div style="display:flex; justify-content:space-between; color:#999; font-size:12px; border-top:1px solid #333; padding-top:10px;">
-                                    <span>👁️ {fmt_num(views)}</span>
-                                    <span>❤️ {fmt_num(likes)}</span>
-                                    <span>💬 {fmt_num(comments_ct)}</span>
-                                    <span>↗️ {fmt_num(shares)}</span>
-                                </div>
-                            </div>
-                            """
-                            result_card_html = "".join(line.strip() for line in result_card_html.split("\n"))
-                            st.markdown(result_card_html, unsafe_allow_html=True)
-
-                            # Refresh button
-                            if st.button("🔄 Refresh Dashboard to See New Video"):
-                                st.cache_data.clear()
-                                st.cache_resource.clear()
-                                st.rerun()
-
-                        elif result_data.get("status") == "partial":
-                            status_box.warning(f"⚠️ Partial result: Video scraped but some steps failed. Check steps above.")
-
-                        else:
-                            error_msg = result_data.get("error", "Unknown error")
-                            status_box.error(f"❌ Analysis failed: {error_msg}")
-
-                except requests.exceptions.ConnectionError:
-                    status_box.error("❌ Cannot connect to Flask API backend. Make sure it's running on the expected port.")
-                    st.info(f"💡 Expected backend at: {api_endpoint if 'api_endpoint' in dir() else 'http://127.0.0.1:5000'}")
-                except requests.exceptions.Timeout:
-                    status_box.error("❌ Request timed out. The video may be taking too long to scrape.")
                 except Exception as e:
-                    status_box.error(f"❌ Error: {e}")
                     st.session_state["last_logs"] = str(e)
+                    status_box.error(f"❌ Error: {e}")
 
 
 
