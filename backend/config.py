@@ -72,11 +72,11 @@ class Config:
     # ============================================
     # Apify Configuration (Optional)
     # ============================================
-    APIFY_API_TOKEN = os.getenv("APIFY_API_TOKEN")
+    APIFY_API_TOKEN = get_secret("APIFY_API_TOKEN")
     # Primary: tiktok-video-scraper-task (cheaper, faster)
-    APIFY_TASK_URL_PRIMARY = os.getenv("APIFY_TASK_URL_PRIMARY", "")
+    APIFY_TASK_URL_PRIMARY = get_secret("APIFY_TASK_URL_PRIMARY", "")
     # Fallback: tiktok-scraper-task (more expensive, use if primary fails)
-    APIFY_TASK_URL_FALLBACK = os.getenv("APIFY_TASK_URL_FALLBACK", "")
+    APIFY_TASK_URL_FALLBACK = get_secret("APIFY_TASK_URL_FALLBACK", "")
     # Legacy alias for backwards compatibility
     APIFY_TASK_URL = APIFY_TASK_URL_PRIMARY
 
