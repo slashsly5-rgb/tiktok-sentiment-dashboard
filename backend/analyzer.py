@@ -25,7 +25,10 @@ class Analyzer:
 
         if self.provider == "mistral":
             # Use Mistral AI as primary
-            from mistralai import Mistral
+            try:
+                from mistralai import Mistral
+            except ImportError:
+                from mistralai.client import MistralClient as Mistral
             from config import Config
 
             self.api_key = api_key or Config.MISTRAL_API_KEY or os.getenv("MISTRAL_API_KEY")

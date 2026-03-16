@@ -4,7 +4,10 @@ Handles conversational AI for TikTok sentiment analytics
 """
 
 import os
-from mistralai import Mistral
+try:
+    from mistralai import Mistral
+except ImportError:
+    from mistralai.client import MistralClient as Mistral
 from typing import Dict, Any, List, Optional
 from datetime import datetime, timedelta
 from database import SupabaseClient
